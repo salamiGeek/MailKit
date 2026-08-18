@@ -16,4 +16,5 @@ bin
 *.zip
 .idea
 .worktrees/
+plugins/mailkit-agent/server/
 .DS_Store

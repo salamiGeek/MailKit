@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using ModelContextProtocol.Client;
 
@@ -7,59 +6,27 @@ namespace MailKit.Agent.Mcp.Tests.Tools;
 public class ToolSchemaTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(15);
-    private readonly ConcurrentQueue<string> _standardError = new();
-    private string? _dataDirectory;
-    private McpClient? _client;
+    private StdioMcpServer? _server;
 
     [SetUp]
     public async Task SetUp()
     {
-        _standardError.Clear();
-        _dataDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "mailkit-agent-mcp-tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_dataDirectory);
-
-        using var cancellation = new CancellationTokenSource(TestTimeout);
-        var transport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "MailKit Agent schema test",
-            Command = DotnetHostResolver.Resolve(),
-            Arguments = [ResolveServerAssembly()],
-            WorkingDirectory = FindRepositoryRoot(),
-            ShutdownTimeout = TimeSpan.FromSeconds(5),
-            InheritEnvironmentVariables = false,
-            EnvironmentVariables = CreateServerEnvironment(_dataDirectory),
-            StandardErrorLines = _standardError.Enqueue
-        });
-
-        try
-        {
-            _client = await McpClient.CreateAsync(transport, cancellationToken: cancellation.Token);
-        }
-        catch
-        {
-            Directory.Delete(_dataDirectory, recursive: true);
-            throw;
-        }
+        _server = await StdioMcpServer.StartAsync(
+            "MailKit Agent schema test",
+            FindRepositoryRoot(),
+            ResolveServerAssembly());
     }
 
     [TearDown]
     public async Task TearDown()
     {
-        try
-        {
-            if (_client is not null)
-                await _client.DisposeAsync();
-        }
-        finally
-        {
-            if (_dataDirectory is not null && Directory.Exists(_dataDirectory))
-                Directory.Delete(_dataDirectory, recursive: true);
-        }
+        if (_server is null)
+            return;
+
+        await _server.DisposeAsync();
 
         Assert.That(
-            string.Join(Environment.NewLine, _standardError),
+            StandardErrorText,
             Does.Not.Contain("MCP frame").IgnoreCase);
     }
 
@@ -67,7 +34,7 @@ public class ToolSchemaTests
     public async Task FoundationToolsAdvertiseSafeStructuredSchemas()
     {
         using var cancellation = new CancellationTokenSource(TestTimeout);
-        var tools = await _client!.ListToolsAsync(cancellationToken: cancellation.Token);
+        var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
 
         Assert.That(
             tools.Select(tool => tool.Name),
@@ -104,13 +71,13 @@ public class ToolSchemaTests
     {
         using var cancellation = new CancellationTokenSource(TestTimeout);
 
-        var health = await _client!.CallToolAsync(
+        var health = await _server!.Client.CallToolAsync(
             "diagnostics_health",
             cancellationToken: cancellation.Token);
-        var accounts = await _client.CallToolAsync(
+        var accounts = await _server.Client.CallToolAsync(
             "account_list",
             cancellationToken: cancellation.Token);
-        var invalidPut = await _client.CallToolAsync(
+        var invalidPut = await _server.Client.CallToolAsync(
             "account_profile_put",
             new Dictionary<string, object?>
             {
@@ -157,7 +124,7 @@ public class ToolSchemaTests
                 JsonSerializer.Serialize(invalidPut.Content),
                 Does.Not.Contain("private-user-value"));
             Assert.That(
-                string.Join(Environment.NewLine, _standardError),
+                StandardErrorText,
                 Does.Not.Contain("threw an unhandled exception").IgnoreCase);
         });
     }
@@ -186,8 +153,8 @@ public class ToolSchemaTests
             numericAuthentication.Content,
             numericTls.Content
         });
-        var accountsDirectory = Path.Combine(_dataDirectory!, "accounts");
-        var standardError = string.Join(Environment.NewLine, _standardError);
+        var accountsDirectory = Path.Combine(_server!.DataDirectory, "accounts");
+        var standardError = StandardErrorText;
 
         Assert.Multiple(() =>
         {
@@ -209,7 +176,7 @@ public class ToolSchemaTests
         object authentication,
         object tls,
         CancellationToken cancellationToken) =>
-        await _client!.CallToolAsync(
+        await _server!.Client.CallToolAsync(
             "account_profile_put",
             new Dictionary<string, object?>
             {
@@ -254,14 +221,8 @@ public class ToolSchemaTests
         return false;
     }
 
-    private static Dictionary<string, string?> CreateServerEnvironment(string dataDirectory)
-    {
-        var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
-        environment["MAILKIT_AGENT_DATA_DIR"] = dataDirectory;
-        environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-        environment["DOTNET_NOLOGO"] = "1";
-        return environment;
-    }
+    private string StandardErrorText =>
+        string.Join(Environment.NewLine, _server!.StandardError);
 
     private static string ResolveServerAssembly()
     {
