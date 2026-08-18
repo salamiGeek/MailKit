@@ -1,6 +1,7 @@
 {
   "mailkit-agent": {
     "command": "dotnet",
-    "args": ["${PLUGIN_ROOT}/server/MailKit.Agent.Mcp.dll"]
+    "args": ["server/MailKit.Agent.Mcp.dll"],
+    "cwd": "."
   }
 }
