@@ -1,0 +1,20 @@
+{
+  "name": "mailkit-agent",
+  "version": "0.1.0",
+  "description": "Use local IMAP, POP3, and SMTP accounts safely through MailKit.",
+  "author": { "name": "yarnell", "email": "mryarnell@foxmail.com" },
+  "license": "MIT",
+  "keywords": ["email", "imap", "pop3", "smtp", "mailkit"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MailKit Agent",
+    "shortDescription": "Use local email accounts safely",
+    "longDescription": "Read and manage local email account connections through a bundled MailKit MCP server with explicit safety boundaries.",
+    "developerName": "yarnell",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["List my configured email accounts.", "Check whether the local email server plugin is healthy."],
+    "brandColor": "#2563EB"
+  }
+}

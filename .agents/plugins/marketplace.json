@@ -1,0 +1,17 @@
+{
+  "name": "mailkit-agent-local",
+  "plugins": [
+    {
+      "name": "mailkit-agent",
+      "source": {
+        "source": "local",
+        "path": "./plugins/mailkit-agent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
