@@ -161,6 +161,29 @@ public class JsonAccountProfileStoreTests
     }
 
     [Test]
+    public void PutRejectsUndefinedEnumsBeforeCreatingStorageArtifacts()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+        var profile = CreateProfile("work") with
+        {
+            Authentication = (AuthenticationKind)999,
+            Imap = new EndpointSettings("imap.example.com", 993, (TlsMode)999)
+        };
+
+        var exception = Assert.ThrowsAsync<ArgumentException>(() =>
+            store.PutAsync(profile, CancellationToken.None));
+
+        var accountsDirectory = Path.Combine(temp.Path, "accounts");
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Does.StartWith("Account profile is invalid."));
+            Assert.That(exception.Message, Does.Not.Contain("999"));
+            Assert.That(Directory.Exists(accountsDirectory), Is.False);
+        });
+    }
+
+    [Test]
     public void DeleteRejectsUnsafeAccountId()
     {
         using var temp = new TemporaryDirectory();
@@ -328,6 +351,41 @@ public class AccountProfileValidatorTests
         var issues = AccountProfileValidator.Validate(profile);
 
         Assert.That(issues, Is.Empty);
+    }
+
+    [Test]
+    public void RejectsUndefinedAuthenticationKindWithoutEchoingItsValue()
+    {
+        var profile = CreateProfile("work") with
+        {
+            Authentication = (AuthenticationKind)999
+        };
+
+        var issues = AccountProfileValidator.Validate(profile);
+
+        Assert.That(issues, Is.EqualTo(new[] { "authentication: invalid value" }));
+        Assert.That(string.Join(Environment.NewLine, issues), Does.Not.Contain("999"));
+    }
+
+    [Test]
+    public void RejectsUndefinedTlsModeForEveryEndpointWithoutEchoingItsValue()
+    {
+        var profile = CreateProfile("work") with
+        {
+            Imap = new EndpointSettings("imap.example.com", 993, (TlsMode)999),
+            Pop3 = new EndpointSettings("pop3.example.com", 995, (TlsMode)999),
+            Smtp = new EndpointSettings("smtp.example.com", 465, (TlsMode)999)
+        };
+
+        var issues = AccountProfileValidator.Validate(profile);
+
+        Assert.That(issues, Is.EqualTo(new[]
+        {
+            "imap.tls: invalid value",
+            "pop3.tls: invalid value",
+            "smtp.tls: invalid value"
+        }));
+        Assert.That(string.Join(Environment.NewLine, issues), Does.Not.Contain("999"));
     }
 
     [Test]
