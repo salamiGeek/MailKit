@@ -86,6 +86,40 @@ public class OperationPolicyTests
     }
 
     [Test]
+    public void OperationDescriptorUsesStableSnakeCaseJsonFields()
+    {
+        var descriptor = new OperationDescriptor(
+            "message_search", RiskLevel.RecoverableWrite, 2, 2048);
+
+        var json = JsonSerializer.Serialize(descriptor);
+
+        Assert.That(json, Is.EqualTo(
+            "{\"name\":\"message_search\",\"risk\":\"recoverable_write\",\"item_count\":2,\"estimated_output_bytes\":2048}"));
+    }
+
+    [Test]
+    public void PolicyLimitsUsesStableSnakeCaseJsonFields()
+    {
+        var limits = new PolicyLimits(500, 1_048_576);
+
+        var json = JsonSerializer.Serialize(limits);
+
+        Assert.That(json, Is.EqualTo(
+            "{\"max_batch_items\":500,\"max_structured_output_bytes\":1048576}"));
+    }
+
+    [Test]
+    public void PolicyDecisionUsesStableSnakeCaseJsonFields()
+    {
+        var decision = new PolicyDecision(true, true, null);
+
+        var json = JsonSerializer.Serialize(decision);
+
+        Assert.That(json, Is.EqualTo(
+            "{\"allowed\":true,\"confirmation_required\":true,\"error\":null}"));
+    }
+
+    [Test]
     public void ConstructorRejectsNullLimits()
     {
         Assert.Throws<ArgumentNullException>(() => new OperationPolicy(null!));
