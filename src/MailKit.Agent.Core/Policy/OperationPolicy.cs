@@ -13,6 +13,8 @@ public sealed class OperationPolicy
 
     public PolicyDecision Evaluate(OperationDescriptor operation)
     {
+        if (!Enum.IsDefined(operation.Risk))
+            return Deny("policy.invalid_risk", "The operation risk level is invalid.");
         if (operation.ItemCount <= 0)
             return Deny("policy.invalid_count", "Item count must be positive.");
         if (operation.ItemCount > Limits.MaxBatchItems)

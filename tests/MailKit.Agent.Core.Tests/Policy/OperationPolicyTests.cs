@@ -78,6 +78,15 @@ public class OperationPolicyTests
     }
 
     [Test]
+    public void RejectsUndefinedRiskBeforeAnyAllowPath()
+    {
+        var decision = OperationPolicy.Default.Evaluate(
+            new("message_operation", (RiskLevel)999, 1, 1024));
+
+        AssertDenied(decision, "policy.invalid_risk");
+    }
+
+    [Test]
     public void RiskLevelUsesLowerSnakeCaseJson()
     {
         var json = JsonSerializer.Serialize(RiskLevel.ExternalOrIrreversible);
