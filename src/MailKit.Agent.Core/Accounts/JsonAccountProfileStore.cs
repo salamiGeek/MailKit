@@ -65,6 +65,9 @@ public sealed class JsonAccountProfileStore : IAccountProfileStore
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        if (AccountProfileValidator.Validate(profile).Count > 0)
+            throw new ArgumentException("Account profile is invalid.", nameof(profile));
+
         var destination = GetProfilePath(profile.Id);
         var temporary = destination + ".tmp";
         Directory.CreateDirectory(_accountsDirectory);
