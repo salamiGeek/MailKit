@@ -15,4 +15,5 @@ bin
 *.tree
 *.zip
 .idea
+.worktrees/
 .DS_Store
