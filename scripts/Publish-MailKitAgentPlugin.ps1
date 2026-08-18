@@ -17,6 +17,28 @@ function Get-CanonicalPath {
     return (Resolve-Path -LiteralPath $LiteralPath -ErrorAction Stop).ProviderPath
 }
 
+function Assert-NoReparsePointPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $LiteralPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Description
+    )
+
+    $current = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($LiteralPath))
+    while ($null -ne $current) {
+        if (Test-Path -LiteralPath $current.FullName) {
+            $item = Get-Item -LiteralPath $current.FullName -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to publish: $Description contains a reparse-point path component: $($current.FullName)"
+            }
+        }
+
+        $current = $current.Parent
+    }
+}
+
 function Test-PathEquals {
     param(
         [Parameter(Mandatory = $true)]
@@ -54,10 +76,13 @@ function Test-IsChildPath {
     return $Path.StartsWith($parentPrefix, $comparison)
 }
 
+$repoRootPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+Assert-NoReparsePointPath -LiteralPath $repoRootPath -Description 'repository root'
 $canonicalScriptRoot = Get-CanonicalPath -LiteralPath $PSScriptRoot
-$canonicalRepoRoot = Get-CanonicalPath -LiteralPath (Join-Path $canonicalScriptRoot '..')
+$canonicalRepoRoot = Get-CanonicalPath -LiteralPath $repoRootPath
 $expectedPluginPath = [IO.Path]::GetFullPath(
     (Join-Path $canonicalRepoRoot 'plugins/mailkit-agent'))
+Assert-NoReparsePointPath -LiteralPath $expectedPluginPath -Description 'plugin root'
 $canonicalPluginRoot = Get-CanonicalPath -LiteralPath (
     $expectedPluginPath)
 if (-not (Test-PathEquals -Left $canonicalPluginRoot -Right $expectedPluginPath) -or
@@ -70,6 +95,7 @@ $expectedServerPath = [IO.Path]::GetFullPath(
 $outputRelativePath = 'plugins/mailkit-agent/server'
 $outputPath = [IO.Path]::GetFullPath(
     (Join-Path $canonicalRepoRoot $outputRelativePath))
+Assert-NoReparsePointPath -LiteralPath $outputPath -Description 'server output'
 
 if (-not (Test-PathEquals -Left $outputPath -Right $expectedServerPath)) {
     throw "Refusing to publish: output is not the expected plugin server path."
@@ -84,6 +110,7 @@ if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
 }
 
 New-Item -ItemType Directory -Path $expectedServerPath -Force | Out-Null
+Assert-NoReparsePointPath -LiteralPath $expectedServerPath -Description 'server output'
 $canonicalServerPath = Get-CanonicalPath -LiteralPath $expectedServerPath
 if (-not (Test-PathEquals -Left $canonicalServerPath -Right $expectedServerPath) -or
     -not (Test-IsChildPath -Path $canonicalServerPath -Parent $canonicalPluginRoot)) {
