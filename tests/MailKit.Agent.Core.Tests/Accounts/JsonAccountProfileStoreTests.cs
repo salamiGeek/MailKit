@@ -227,6 +227,43 @@ public class JsonAccountProfileStoreTests
         });
     }
 
+    [Test]
+    public async Task ConcurrentSameIdPutsUseIndependentTemporaryFiles()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+        var profiles = Enumerable.Range(1, 32)
+            .Select(index => CreateProfile("work") with
+            {
+                DisplayName = $"Writer {index}"
+            })
+            .ToArray();
+        var start = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var writes = profiles.Select(profile => Task.Run(async () =>
+        {
+            await start.Task;
+            await store.PutAsync(profile, CancellationToken.None);
+        })).ToArray();
+
+        start.SetResult();
+        await Task.WhenAll(writes);
+
+        var destination = Path.Combine(temp.Path, "accounts", "work.json");
+        var finalProfile = await store.GetAsync("work", CancellationToken.None);
+        var temporaryFiles = Directory.EnumerateFiles(
+            Path.GetDirectoryName(destination)!, "*.tmp*").ToArray();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(writes, Has.All.Matches<Task>(task =>
+                task.IsCompletedSuccessfully));
+            Assert.That(finalProfile, Is.Not.Null);
+            Assert.That(profiles, Has.Some.EqualTo(finalProfile));
+            Assert.That(temporaryFiles, Is.Empty);
+        });
+    }
+
     private static AccountProfile CreateProfile(string id) =>
         new(
             id,
@@ -296,6 +333,26 @@ public class AccountProfileValidatorTests
         {
             "display_name: required",
             "username: required"
+        }));
+    }
+
+    [Test]
+    public void RejectsOversizedNonSecretStringsWithStableIssues()
+    {
+        var profile = CreateProfile("work") with
+        {
+            DisplayName = new string('d', 257),
+            Username = new string('u', 321),
+            Imap = new EndpointSettings(new string('h', 254), 993, TlsMode.ImplicitTls)
+        };
+
+        var issues = AccountProfileValidator.Validate(profile);
+
+        Assert.That(issues, Is.EqualTo(new[]
+        {
+            "display_name: must be 256 characters or fewer",
+            "username: must be 320 characters or fewer",
+            "imap.host: must be 253 characters or fewer"
         }));
     }
 

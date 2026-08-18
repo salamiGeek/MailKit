@@ -69,14 +69,14 @@ public sealed class JsonAccountProfileStore : IAccountProfileStore
             throw new ArgumentException("Account profile is invalid.", nameof(profile));
 
         var destination = GetProfilePath(profile.Id);
-        var temporary = destination + ".tmp";
+        var temporary = $"{destination}.{Guid.NewGuid():N}.tmp";
         Directory.CreateDirectory(_accountsDirectory);
 
         try
         {
             await using (var stream = new FileStream(
                 temporary,
-                FileMode.Create,
+                FileMode.CreateNew,
                 FileAccess.Write,
                 FileShare.None,
                 4096,
@@ -89,7 +89,10 @@ public sealed class JsonAccountProfileStore : IAccountProfileStore
                 await stream.FlushAsync(cancellationToken);
             }
 
-            File.Move(temporary, destination, overwrite: true);
+            await MoveOverDestinationAsync(
+                temporary,
+                destination,
+                cancellationToken);
         }
         finally
         {
@@ -117,5 +120,28 @@ public sealed class JsonAccountProfileStore : IAccountProfileStore
             throw new ArgumentException("Account ID has an invalid format.", nameof(id));
 
         return Path.Combine(_accountsDirectory, id + ".json");
+    }
+
+    private static async Task MoveOverDestinationAsync(
+        string source,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 100;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < maxAttempts &&
+                exception is IOException or UnauthorizedAccessException)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1), cancellationToken);
+            }
+        }
     }
 }

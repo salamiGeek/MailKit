@@ -4,6 +4,10 @@ namespace MailKit.Agent.Core.Accounts;
 
 public static class AccountProfileValidator
 {
+    public const int MaxDisplayNameLength = 256;
+    public const int MaxUsernameLength = 320;
+    public const int MaxEndpointHostLength = 253;
+
     private static readonly Regex IdPattern =
         new("^[a-z0-9][a-z0-9_-]{0,63}$", RegexOptions.CultureInvariant);
 
@@ -16,8 +20,12 @@ public static class AccountProfileValidator
             issues.Add("id: invalid format");
         if (string.IsNullOrWhiteSpace(profile.DisplayName))
             issues.Add("display_name: required");
+        else if (profile.DisplayName.Length > MaxDisplayNameLength)
+            issues.Add($"display_name: must be {MaxDisplayNameLength} characters or fewer");
         if (string.IsNullOrWhiteSpace(profile.Username))
             issues.Add("username: required");
+        else if (profile.Username.Length > MaxUsernameLength)
+            issues.Add($"username: must be {MaxUsernameLength} characters or fewer");
         if (!Enum.IsDefined(profile.Authentication))
             issues.Add("authentication: invalid value");
         if (profile.Imap is null && profile.Pop3 is null && profile.Smtp is null)
@@ -42,6 +50,8 @@ public static class AccountProfileValidator
 
         if (string.IsNullOrWhiteSpace(endpoint.Host))
             issues.Add($"{field}.host: required");
+        else if (endpoint.Host.Length > MaxEndpointHostLength)
+            issues.Add($"{field}.host: must be {MaxEndpointHostLength} characters or fewer");
         if (endpoint.Port is < 1 or > 65535)
             issues.Add($"{field}.port: must be between 1 and 65535");
         if (!Enum.IsDefined(endpoint.Tls))
