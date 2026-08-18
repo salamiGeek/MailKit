@@ -20,6 +20,8 @@ public class FoundationServerTests
             repositoryRoot,
             "run",
             "--no-build",
+            "--configuration",
+            "Release",
             "--project",
             projectPath);
         using var cancellation = new CancellationTokenSource(TestTimeout);
