@@ -117,6 +117,50 @@ public class JsonAccountProfileStoreTests
     }
 
     [Test]
+    public void PutRejectsPlainTlsBeforeCreatingStorageArtifacts()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+        var profile = CreateProfile("work") with
+        {
+            Imap = new EndpointSettings("private-imap.example.com", 143, TlsMode.Plain)
+        };
+
+        var exception = Assert.ThrowsAsync<ArgumentException>(() =>
+            store.PutAsync(profile, CancellationToken.None));
+
+        var accountsDirectory = Path.Combine(temp.Path, "accounts");
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Does.StartWith("Account profile is invalid."));
+            Assert.That(exception.Message, Does.Not.Contain("private-imap.example.com"));
+            Assert.That(Directory.Exists(accountsDirectory), Is.False);
+            Assert.That(File.Exists(Path.Combine(accountsDirectory, "work.json")), Is.False);
+            Assert.That(File.Exists(Path.Combine(accountsDirectory, "work.json.tmp")), Is.False);
+        });
+    }
+
+    [Test]
+    public void PutRejectsOtherInvalidProfilesBeforeCreatingStorageArtifacts()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+        var profile = CreateProfile("work") with { DisplayName = " " };
+
+        var exception = Assert.ThrowsAsync<ArgumentException>(() =>
+            store.PutAsync(profile, CancellationToken.None));
+
+        var accountsDirectory = Path.Combine(temp.Path, "accounts");
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Does.StartWith("Account profile is invalid."));
+            Assert.That(Directory.Exists(accountsDirectory), Is.False);
+            Assert.That(File.Exists(Path.Combine(accountsDirectory, "work.json")), Is.False);
+            Assert.That(File.Exists(Path.Combine(accountsDirectory, "work.json.tmp")), Is.False);
+        });
+    }
+
+    [Test]
     public void DeleteRejectsUnsafeAccountId()
     {
         using var temp = new TemporaryDirectory();
