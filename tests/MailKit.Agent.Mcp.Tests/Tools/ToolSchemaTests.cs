@@ -24,7 +24,7 @@ public class ToolSchemaTests
         var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "MailKit Agent schema test",
-            Command = @"C:\Program Files\dotnet\dotnet.exe",
+            Command = DotnetHostResolver.Resolve(),
             Arguments = [ResolveServerAssembly()],
             WorkingDirectory = FindRepositoryRoot(),
             ShutdownTimeout = TimeSpan.FromSeconds(5),
@@ -161,6 +161,75 @@ public class ToolSchemaTests
                 Does.Not.Contain("threw an unhandled exception").IgnoreCase);
         });
     }
+
+    [Test]
+    public async Task NumericEnumsAreRejectedWithoutPersistenceOrMarkerDisclosure()
+    {
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        var marker = "private-numeric-enum-marker";
+
+        var numericAuthentication = await CallPutAsync(
+            "numeric-authentication",
+            marker,
+            999,
+            "implicit_tls",
+            cancellation.Token);
+        var numericTls = await CallPutAsync(
+            "numeric-tls",
+            marker,
+            "password",
+            999,
+            cancellation.Token);
+
+        var responseText = JsonSerializer.Serialize(new[]
+        {
+            numericAuthentication.Content,
+            numericTls.Content
+        });
+        var accountsDirectory = Path.Combine(_dataDirectory!, "accounts");
+        var standardError = string.Join(Environment.NewLine, _standardError);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(numericAuthentication.IsError, Is.True);
+            Assert.That(numericTls.IsError, Is.True);
+            Assert.That(
+                Directory.Exists(accountsDirectory)
+                    ? Directory.EnumerateFiles(accountsDirectory, "*.json").ToArray()
+                    : Array.Empty<string>(),
+                Is.Empty);
+            Assert.That(responseText, Does.Not.Contain(marker));
+            Assert.That(standardError, Does.Not.Contain(marker));
+        });
+    }
+
+    private async Task<ModelContextProtocol.Protocol.CallToolResult> CallPutAsync(
+        string id,
+        string displayName,
+        object authentication,
+        object tls,
+        CancellationToken cancellationToken) =>
+        await _client!.CallToolAsync(
+            "account_profile_put",
+            new Dictionary<string, object?>
+            {
+                ["profile"] = new Dictionary<string, object?>
+                {
+                    ["id"] = id,
+                    ["display_name"] = displayName,
+                    ["username"] = "user@example.test",
+                    ["authentication"] = authentication,
+                    ["imap"] = new Dictionary<string, object?>
+                    {
+                        ["host"] = "imap.example.test",
+                        ["port"] = 993,
+                        ["tls"] = tls
+                    },
+                    ["pop3"] = null,
+                    ["smtp"] = null
+                }
+            },
+            cancellationToken: cancellationToken);
 
     private static bool ContainsSecretName(JsonElement element)
     {

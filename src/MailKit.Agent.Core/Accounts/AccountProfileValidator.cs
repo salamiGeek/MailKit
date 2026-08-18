@@ -18,6 +18,8 @@ public static class AccountProfileValidator
             issues.Add("display_name: required");
         if (string.IsNullOrWhiteSpace(profile.Username))
             issues.Add("username: required");
+        if (!Enum.IsDefined(profile.Authentication))
+            issues.Add("authentication: invalid value");
         if (profile.Imap is null && profile.Pop3 is null && profile.Smtp is null)
             issues.Add("endpoints: at least one endpoint is required");
 
@@ -42,7 +44,9 @@ public static class AccountProfileValidator
             issues.Add($"{field}.host: required");
         if (endpoint.Port is < 1 or > 65535)
             issues.Add($"{field}.port: must be between 1 and 65535");
-        if (endpoint.Tls is TlsMode.Plain)
+        if (!Enum.IsDefined(endpoint.Tls))
+            issues.Add($"{field}.tls: invalid value");
+        else if (endpoint.Tls is TlsMode.Plain)
             issues.Add($"{field}.tls: TLS is required");
     }
 }
