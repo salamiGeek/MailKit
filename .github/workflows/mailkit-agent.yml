@@ -1,0 +1,43 @@
+name: MailKit Agent
+
+on:
+  push:
+    paths:
+      - 'src/MailKit.Agent.*/**'
+      - 'tests/MailKit.Agent.*/**'
+      - 'plugins/mailkit-agent/**'
+      - '.agents/plugins/**'
+      - 'scripts/Publish-MailKitAgentPlugin.ps1'
+      - 'MailKit.Agent.sln'
+  pull_request:
+    paths:
+      - 'src/MailKit.Agent.*/**'
+      - 'tests/MailKit.Agent.*/**'
+      - 'plugins/mailkit-agent/**'
+      - '.agents/plugins/**'
+      - 'scripts/Publish-MailKitAgentPlugin.ps1'
+      - 'MailKit.Agent.sln'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore MailKit.Agent.sln
+
+      - name: Build
+        run: dotnet build MailKit.Agent.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test MailKit.Agent.sln --configuration Release --no-build

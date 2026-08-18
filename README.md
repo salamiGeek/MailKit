@@ -17,6 +17,10 @@
 
 MailKit is a cross-platform mail client library built on top of [MimeKit](https://github.com/jstedfast/MimeKit).
 
+### Agent plugin (experimental)
+
+The repository also contains an experimental [MailKit Agent plugin](docs/MailKit.Agent/getting-started.md) for Codex. Its foundation release is separate from the supported MailKit NuGet library and currently provides only local health checks and non-secret account-profile configuration; it does not yet connect to mailboxes, read or write messages, or send email.
+
 ## Donate
 
 MailKit is a personal open source project that I have put thousands of hours into perfecting with the
