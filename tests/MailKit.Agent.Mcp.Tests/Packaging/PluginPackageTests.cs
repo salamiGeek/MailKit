@@ -28,7 +28,8 @@ public class PluginPackageTests
 		Assert.That(server.GetProperty("command").GetString(), Is.EqualTo("dotnet"));
 		Assert.That(
 			server.GetProperty("args").EnumerateArray().Select(value => value.GetString()),
-			Is.EqualTo(new[] { "${PLUGIN_ROOT}/server/MailKit.Agent.Mcp.dll" }));
+			Is.EqualTo(new[] { "server/MailKit.Agent.Mcp.dll" }));
+		Assert.That(server.GetProperty("cwd").GetString(), Is.EqualTo("."));
 	}
 
 	[Test]
