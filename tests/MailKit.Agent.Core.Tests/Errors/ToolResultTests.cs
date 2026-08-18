@@ -33,4 +33,10 @@ public class ToolResultTests
             Assert.That(result.Error, Is.Null);
         });
     }
+
+    [Test]
+    public void ContradictoryStateCannotBeConstructedDirectly()
+    {
+        Assert.That(typeof(ToolResult<int>).GetConstructors(), Is.Empty);
+    }
 }
