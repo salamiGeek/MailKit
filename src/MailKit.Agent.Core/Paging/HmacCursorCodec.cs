@@ -33,6 +33,9 @@ public sealed class HmacCursorCodec : ICursorCodec
     {
         try
         {
+            if (token is null)
+                throw new InvalidCursorException();
+
             var parts = token.Split('.');
             if (parts.Length != 2)
                 throw new InvalidCursorException();
@@ -76,6 +79,10 @@ public sealed class HmacCursorCodec : ICursorCodec
             _ => throw new FormatException()
         };
 
-        return Convert.FromBase64String(base64);
+        var bytes = Convert.FromBase64String(base64);
+        if (!string.Equals(Base64UrlEncode(bytes), value, StringComparison.Ordinal))
+            throw new FormatException();
+
+        return bytes;
     }
 }

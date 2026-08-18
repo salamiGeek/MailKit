@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using MailKit.Agent.Core.Paging;
 
 namespace MailKit.Agent.Core.Tests.Paging;
@@ -22,6 +23,25 @@ public class HmacCursorCodecTests
     }
 
     [Test]
+    public void CursorPayloadUsesStableSnakeCaseJsonNames()
+    {
+        var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
+        var token = codec.Encode(new CursorPayload("acct", "INBOX", "25", Now.AddMinutes(10)));
+        var payloadSegment = token[..token.IndexOf('.')];
+        using var document = JsonDocument.Parse(Base64UrlDecode(payloadSegment));
+
+        var propertyNames = document.RootElement.EnumerateObject().Select(property => property.Name);
+
+        Assert.That(propertyNames, Is.EquivalentTo(new[]
+        {
+            "account_id",
+            "scope",
+            "position",
+            "expires_at"
+        }));
+    }
+
+    [Test]
     public void CursorRejectsTampering()
     {
         var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
@@ -31,6 +51,42 @@ public class HmacCursorCodecTests
         var tampered = token[..(separator + 1)] + replacement + token[(separator + 2)..];
 
         Assert.Throws<InvalidCursorException>(() => codec.Decode(tampered));
+    }
+
+    [TestCase('-', '+')]
+    [TestCase('_', '/')]
+    public void DecodeRejectsNonUrlSafeCharacters(char urlSafeCharacter, char standardBase64Character)
+    {
+        var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
+        var token = codec.Encode(new CursorPayload("acct", "INBOX", "25", Now.AddMinutes(10)));
+        var separator = token.IndexOf('.');
+        var signature = token[(separator + 1)..];
+        Assert.That(signature, Does.Contain(urlSafeCharacter.ToString()), "Test token must exercise the replacement.");
+        var nonUrlSafe = token[..(separator + 1)] + signature.Replace(urlSafeCharacter, standardBase64Character);
+
+        Assert.Throws<InvalidCursorException>(() => codec.Decode(nonUrlSafe));
+    }
+
+    [Test]
+    public void DecodeRejectsBase64UrlPadding()
+    {
+        var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
+        var token = codec.Encode(new CursorPayload("acct", "INBOX", "25", Now.AddMinutes(10)));
+
+        Assert.Throws<InvalidCursorException>(() => codec.Decode(token + "="));
+    }
+
+    [Test]
+    public void DecodeRejectsNonCanonicalTailBits()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
+        var token = codec.Encode(new CursorPayload("acct", "INBOX", "25", Now.AddMinutes(10)));
+        var lastIndex = alphabet.IndexOf(token[^1]);
+        Assert.That(lastIndex % 4, Is.Zero, "A 32-byte signature must end with four data bits and two zero bits.");
+        var nonCanonical = token[..^1] + alphabet[lastIndex + 1];
+
+        Assert.Throws<InvalidCursorException>(() => codec.Decode(nonCanonical));
     }
 
     [TestCase(0)]
@@ -63,6 +119,20 @@ public class HmacCursorCodecTests
         var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
 
         Assert.Throws<InvalidCursorException>(() => codec.Decode(token));
+    }
+
+    [Test]
+    public void DecodeNullUsesNonSensitiveInvalidCursorException()
+    {
+        var codec = new HmacCursorCodec(Key, new FakeTimeProvider(Now));
+
+        var exception = Assert.Throws<InvalidCursorException>(() => codec.Decode(null!));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Is.EqualTo("Cursor is invalid or expired."));
+            Assert.That(exception.InnerException, Is.Null);
+        });
     }
 
     [Test]
@@ -107,6 +177,13 @@ public class HmacCursorCodecTests
 
     private static string Base64UrlEncode(ReadOnlySpan<byte> value) =>
         Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static byte[] Base64UrlDecode(string value)
+    {
+        var base64 = value.Replace('-', '+').Replace('_', '/');
+        base64 += new string('=', (4 - base64.Length % 4) % 4);
+        return Convert.FromBase64String(base64);
+    }
 
     private sealed class FakeTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
