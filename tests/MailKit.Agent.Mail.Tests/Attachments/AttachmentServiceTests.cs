@@ -290,12 +290,107 @@ public sealed class AttachmentServiceTests
     [Test]
     public void EmptyUploadRootsRejectAttachmentReads()
     {
-        var policy = new UploadAttachmentPathPolicy(Array.Empty<string>());
+        using var policy = new UploadAttachmentPathPolicy(Array.Empty<string>());
 
         var exception = Assert.Throws<MailOperationException>(() =>
-            policy.ResolveForRead(Path.Combine(testDirectory, "attachment.bin")));
+            policy.OpenRead(Path.Combine(testDirectory, "attachment.bin")));
 
         Assert.That(exception!.Error.Code, Is.EqualTo("attachment.upload_roots_required"));
+    }
+
+    [Test]
+    public void UploadOpenRejectsSymlinkComponentEscapingConfiguredRoot()
+    {
+        string uploadRoot = Path.Combine(testDirectory, "uploads");
+        string outside = Path.Combine(testDirectory, "outside-upload");
+        string link = Path.Combine(uploadRoot, "linked");
+        Directory.CreateDirectory(uploadRoot);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "secret.bin"), "outside");
+        Directory.CreateSymbolicLink(link, outside);
+        using var policy = new UploadAttachmentPathPolicy(new[] { uploadRoot });
+
+        var exception = Assert.Throws<MailOperationException>(() =>
+            policy.OpenRead(Path.Combine(link, "secret.bin")));
+
+        Assert.That(exception!.Error.Code, Is.EqualTo("attachment.upload_path_not_allowed"));
+    }
+
+    [Test]
+    public void UploadPolicyRejectsConfiguredRootThatIsAReparsePoint()
+    {
+        string outside = Path.Combine(testDirectory, "outside-root");
+        string linkedRoot = Path.Combine(testDirectory, "linked-upload-root");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(linkedRoot, outside);
+
+        var exception = Assert.Throws<MailOperationException>(() =>
+            new UploadAttachmentPathPolicy(new[] { linkedRoot }));
+
+        Assert.That(exception!.Error.Code, Is.EqualTo("attachment.upload_path_not_allowed"));
+    }
+
+    [Test]
+    [Platform("Win,Linux")]
+    public void UploadOpenReturnsStreamBoundToApprovedFileIdentity()
+    {
+        string uploadRoot = Path.Combine(testDirectory, "uploads");
+        string attachment = Path.Combine(uploadRoot, "attachment.bin");
+        Directory.CreateDirectory(uploadRoot);
+        File.WriteAllText(attachment, "approved");
+        using var policy = new UploadAttachmentPathPolicy(new[] { uploadRoot });
+
+        using Stream stream = policy.OpenRead(attachment);
+        using var reader = new StreamReader(stream);
+
+        Assert.That(reader.ReadToEnd(), Is.EqualTo("approved"));
+    }
+
+    [Test]
+    [Platform("Win")]
+    public void UploadOpenRejectsConfiguredRootIdentityReplacement()
+    {
+        string uploadRoot = Path.Combine(testDirectory, "uploads");
+        string originalRoot = Path.Combine(testDirectory, "original-uploads");
+        Directory.CreateDirectory(uploadRoot);
+        using var policy = new UploadAttachmentPathPolicy(new[] { uploadRoot });
+        Directory.Move(uploadRoot, originalRoot);
+        Directory.CreateDirectory(uploadRoot);
+        string replacement = Path.Combine(uploadRoot, "replacement.bin");
+        File.WriteAllText(replacement, "replacement");
+
+        var exception = Assert.Throws<MailOperationException>(() => policy.OpenRead(replacement));
+
+        Assert.That(exception!.Error.Code, Is.EqualTo("attachment.upload_path_not_allowed"));
+    }
+
+    [Test]
+    public void LinuxPublicationUsesProcDescriptorLinkWithoutElevatedCapability()
+    {
+        var api = new RecordingLinuxLinkApi();
+        var publisher = new LinuxUnprivilegedFilePublisher(api);
+
+        publisher.Publish(openFileDescriptor: 41, rootDirectoryDescriptor: 42, "saved.bin");
+
+        Assert.That(api.Call, Is.EqualTo(new LinuxLinkCall(
+            -100, "/proc/self/fd/41", 42, "saved.bin", 0x400)));
+    }
+
+    [Test]
+    [Platform("Linux")]
+    public async Task LinuxUnprivilegedSavePublishesIdentityBoundFile()
+    {
+        var service = CreateService(maxBytes: 1024);
+        using var source = new MemoryStream(new byte[] { 1, 2, 3 });
+
+        AttachmentSaveResult result = await service.SaveAsync(
+            source, Descriptor("linux.bin"), null, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(File.ReadAllBytes(result.Path), Is.EqualTo(new byte[] { 1, 2, 3 }));
+            Assert.That(Directory.GetFiles(downloadRoot, "*.tmp"), Is.Empty);
+        });
     }
 
     private AttachmentService CreateService(long maxBytes) => CreateService(downloadRoot, maxBytes);
@@ -446,4 +541,29 @@ public sealed class AttachmentServiceTests
             afterDispose?.Invoke();
         }
     }
+
+    private sealed class RecordingLinuxLinkApi : ILinuxLinkApi
+    {
+        public LinuxLinkCall? Call { get; private set; }
+
+        public int LinkAt(
+            int oldDirectory,
+            string oldPath,
+            int newDirectory,
+            string newPath,
+            int flags)
+        {
+            Call = new LinuxLinkCall(oldDirectory, oldPath, newDirectory, newPath, flags);
+            return 0;
+        }
+
+        public int GetLastError() => 0;
+    }
+
+    private sealed record LinuxLinkCall(
+        int OldDirectory,
+        string OldPath,
+        int NewDirectory,
+        string NewPath,
+        int Flags);
 }
