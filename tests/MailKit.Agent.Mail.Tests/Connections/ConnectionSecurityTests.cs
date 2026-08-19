@@ -3,7 +3,14 @@ using System.Reflection;
 using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Credentials;
 using MailKit.Agent.Core.Errors;
+using MailKit.Agent.Core.Sending;
 using MailKit.Agent.Mail.Connections;
+using MailKit.Agent.Mail.Imap;
+using MailKit.Agent.Mail.Pop3;
+using MailKit.Agent.Mail.Smtp;
+using MailKit.Net.Imap;
+using MailKit.Net.Pop3;
+using MailKit.Net.Smtp;
 using MailKit.Security;
 
 namespace MailKit.Agent.Mail.Tests.Connections;
@@ -390,6 +397,217 @@ public sealed class ConnectionSecurityTests
         Assert.That(async () => await first.DisposeAsync(), Throws.Nothing);
         Assert.That(async () => await gate.AcquireAsync("third", "imap", CancellationToken.None),
             Throws.TypeOf<ObjectDisposedException>());
+    }
+
+    [Test]
+    public async Task ImapGatewayHoldsGateLeasesFromConnectThroughDisconnect()
+    {
+        var gate = new ConnectionGate(LimitsForTwoConcurrentConnections());
+        var factory = new SlowImapClientFactory();
+        var gateway = new ImapGateway(
+            factory, commandTimeout: TimeSpan.FromSeconds(5), connectionGate: gate);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+
+        Task[] operations = Enumerable.Range(0, 5)
+            .Select(_ => gateway.ListFoldersAsync(Profile(), credential, CancellationToken.None))
+            .ToArray();
+
+        await factory.WaitUntilEnteredAsync(2);
+        await Task.Delay(150);
+        Assert.That(factory.Entered, Is.EqualTo(2),
+            "Only MaxPerAccountProtocol IMAP connections may proceed concurrently.");
+
+        factory.ReleaseConnects();
+        Exception?[] failures = await Task.WhenAll(operations.Select(CaptureFailureAsync));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(factory.Entered, Is.EqualTo(5),
+                "Queued operations must proceed once a lease is released, never fail.");
+            Assert.That(factory.MaxConcurrent, Is.EqualTo(2));
+            Assert.That(failures, Has.All.InstanceOf<MailOperationException>());
+        });
+    }
+
+    [Test]
+    public async Task Pop3GatewayHoldsGateLeasesFromConnectThroughDisconnect()
+    {
+        var gate = new ConnectionGate(LimitsForTwoConcurrentConnections());
+        var factory = new SlowPop3ClientFactory();
+        var gateway = new Pop3Gateway(
+            factory, commandTimeout: TimeSpan.FromSeconds(5), connectionGate: gate);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+
+        Task[] operations = Enumerable.Range(0, 5)
+            .Select(_ => gateway.ListMessagesAsync(
+                Profile(), credential, 0, 1, CancellationToken.None))
+            .ToArray();
+
+        await factory.WaitUntilEnteredAsync(2);
+        await Task.Delay(150);
+        Assert.That(factory.Entered, Is.EqualTo(2),
+            "Only MaxPerAccountProtocol POP3 connections may proceed concurrently.");
+
+        factory.ReleaseConnects();
+        Exception?[] failures = await Task.WhenAll(operations.Select(CaptureFailureAsync));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(factory.Entered, Is.EqualTo(5));
+            Assert.That(factory.MaxConcurrent, Is.EqualTo(2));
+            Assert.That(failures, Has.All.InstanceOf<MailOperationException>());
+        });
+    }
+
+    [Test]
+    public async Task SmtpGatewayHoldsGateLeasesFromConnectThroughDisconnect()
+    {
+        var gate = new ConnectionGate(LimitsForTwoConcurrentConnections());
+        var factory = new SlowSmtpClientFactory();
+        var gateway = new SmtpGateway(
+            factory, commandTimeout: TimeSpan.FromSeconds(5), connectionGate: gate);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+
+        Task<SendTransportOutcome>[] operations = Enumerable.Range(0, 5)
+            .Select(_ => gateway.SendAsync(
+                Profile(), credential, PreparedMessage(), CancellationToken.None))
+            .ToArray();
+
+        await factory.WaitUntilEnteredAsync(2);
+        await Task.Delay(150);
+        Assert.That(factory.Entered, Is.EqualTo(2),
+            "Only MaxPerAccountProtocol SMTP connections may proceed concurrently.");
+
+        factory.ReleaseConnects();
+        SendTransportOutcome[] outcomes = await Task.WhenAll(operations);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(factory.Entered, Is.EqualTo(5));
+            Assert.That(factory.MaxConcurrent, Is.EqualTo(2));
+            Assert.That(outcomes.Select(outcome => outcome.State),
+                Has.All.EqualTo(SendState.Failed));
+        });
+    }
+
+    private static ConnectionLimits LimitsForTwoConcurrentConnections() => new(
+        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(5), 2, 8);
+
+    private static AccountProfile Profile() => new(
+        "personal", "Personal", "user@example.test", AuthenticationKind.Password,
+        new EndpointSettings("imap.example.test", 993, TlsMode.ImplicitTls),
+        null,
+        new EndpointSettings("smtp.example.test", 465, TlsMode.ImplicitTls));
+
+    private static PreparedOutgoingMessage PreparedMessage()
+    {
+        const string mime =
+            "From: user@example.test\r\n" +
+            "To: alice@example.test\r\n" +
+            "Subject: Gate wiring\r\n" +
+            "\r\n" +
+            "gate wiring body\r\n";
+        return new PreparedOutgoingMessage(
+            "prep-1",
+            "personal",
+            "<id-1@mailkit-agent.local>",
+            new string('a', 64),
+            System.Text.Encoding.UTF8.GetBytes(mime),
+            "user@example.test",
+            ["alice@example.test"],
+            new SendPreview(
+                "prep-1", "personal", "<id-1@mailkit-agent.local>", null,
+                [], [], [], "Gate wiring", null, 0, [],
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(10),
+                new string('c', 64), new string('d', 64), string.Empty),
+            new string('b', 64),
+            DateTimeOffset.UtcNow.AddMinutes(10));
+    }
+
+    private static async Task<Exception?> CaptureFailureAsync(Task operation)
+    {
+        try
+        {
+            await operation.ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private abstract class SlowClientFactoryBase
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int totalEntered;
+        private int occupancy;
+        private int maxConcurrent;
+
+        public int Entered => Volatile.Read(ref totalEntered);
+
+        public int MaxConcurrent => Volatile.Read(ref maxConcurrent);
+
+        public void ReleaseConnects() => release.TrySetResult();
+
+        public async Task WaitUntilEnteredAsync(int expected)
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (Entered < expected)
+            {
+                Assert.That(cancellation.IsCancellationRequested, Is.False,
+                    $"Only {Entered} of {expected} expected connects started.");
+                await Task.Delay(10, cancellation.Token);
+            }
+        }
+
+        protected async Task<T> BlockUntilReleasedAsync<T>()
+        {
+            Interlocked.Increment(ref totalEntered);
+            int current = Interlocked.Increment(ref occupancy);
+            int observed;
+            while ((observed = Volatile.Read(ref maxConcurrent)) < current)
+                Interlocked.CompareExchange(ref maxConcurrent, current, observed);
+
+            try
+            {
+                await release.Task.ConfigureAwait(false);
+                throw new InvalidOperationException("fixture-connect-stop");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref occupancy);
+            }
+        }
+    }
+
+    private sealed class SlowImapClientFactory : SlowClientFactoryBase, IImapClientFactory
+    {
+        public Task<ImapClient> CreateAsync(
+            AccountProfile profile,
+            PasswordCredentialLease credential,
+            CancellationToken cancellationToken) =>
+            BlockUntilReleasedAsync<ImapClient>();
+    }
+
+    private sealed class SlowPop3ClientFactory : SlowClientFactoryBase, IPop3ClientFactory
+    {
+        public Task<Pop3Client> CreateAsync(
+            AccountProfile profile,
+            PasswordCredentialLease credential,
+            CancellationToken cancellationToken) =>
+            BlockUntilReleasedAsync<Pop3Client>();
+    }
+
+    private sealed class SlowSmtpClientFactory : SlowClientFactoryBase, ISmtpClientFactory
+    {
+        public Task<SmtpClient> CreateAsync(
+            AccountProfile profile,
+            PasswordCredentialLease credential,
+            CancellationToken cancellationToken) =>
+            BlockUntilReleasedAsync<SmtpClient>();
     }
 
     private class MailServiceProxy : DispatchProxy

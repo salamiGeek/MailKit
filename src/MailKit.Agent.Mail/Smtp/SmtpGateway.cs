@@ -24,6 +24,7 @@ namespace MailKit.Agent.Mail.Smtp;
 public sealed class SmtpGateway : ISmtpGateway
 {
     private readonly ISmtpClientFactory clientFactory;
+    private readonly ConnectionGate connectionGate;
     private readonly TimeSpan commandTimeout;
 
     public SmtpGateway()
@@ -31,9 +32,13 @@ public sealed class SmtpGateway : ISmtpGateway
     {
     }
 
-    public SmtpGateway(ISmtpClientFactory clientFactory, TimeSpan? commandTimeout = null)
+    public SmtpGateway(
+        ISmtpClientFactory clientFactory,
+        TimeSpan? commandTimeout = null,
+        ConnectionGate? connectionGate = null)
     {
         this.clientFactory = clientFactory ?? throw new ArgumentNullException(nameof(clientFactory));
+        this.connectionGate = connectionGate ?? new ConnectionGate();
         this.commandTimeout = commandTimeout ?? ConnectionLimits.Default.CommandTimeout;
         if (this.commandTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(commandTimeout));
@@ -49,6 +54,12 @@ public sealed class SmtpGateway : ISmtpGateway
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(message);
 
+        // The per-account/SMTP lease is held from just before connect until the
+        // disconnect/dispose cleanup completes; the gate queues callers instead of
+        // failing them.
+        IAsyncDisposable lease = await connectionGate
+            .AcquireAsync(profile.Id, "smtp", cancellationToken)
+            .ConfigureAwait(false);
         SmtpClient? client = null;
         try
         {
@@ -78,6 +89,7 @@ public sealed class SmtpGateway : ISmtpGateway
         {
             if (client is not null)
                 await DisconnectAndDisposeAsync(client).ConfigureAwait(false);
+            await lease.DisposeAsync().ConfigureAwait(false);
         }
     }
 
