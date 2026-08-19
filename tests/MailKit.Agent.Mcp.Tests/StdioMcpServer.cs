@@ -22,7 +22,8 @@ internal sealed class StdioMcpServer : IAsyncDisposable
     public static async Task<StdioMcpServer> StartAsync(
         string name,
         string workingDirectory,
-        params string[] arguments)
+        string[] arguments,
+        IReadOnlyCollection<string>? testFixtures = null)
     {
         var dataDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -30,16 +31,24 @@ internal sealed class StdioMcpServer : IAsyncDisposable
         Directory.CreateDirectory(dataDirectory);
         var server = new StdioMcpServer(dataDirectory);
 
+        var serverArguments = arguments.ToList();
+        if (testFixtures is { Count: > 0 })
+        {
+            // Non-secret fixture switches; the server activates the matching fake
+            // gateways only in DEBUG builds with MAILKIT_AGENT_TEST_MODE=1.
+            serverArguments.Add("--test-fixture:" + string.Join(",", testFixtures));
+        }
+
         using var cancellation = new CancellationTokenSource(OperationTimeout);
         var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = name,
             Command = DotnetHostResolver.Resolve(),
-            Arguments = arguments,
+            Arguments = serverArguments,
             WorkingDirectory = workingDirectory,
             ShutdownTimeout = TimeSpan.FromSeconds(5),
             InheritEnvironmentVariables = false,
-            EnvironmentVariables = CreateServerEnvironment(dataDirectory),
+            EnvironmentVariables = CreateServerEnvironment(dataDirectory, testFixtures),
             StandardErrorLines = server._standardError.Enqueue
         });
 
@@ -75,12 +84,16 @@ internal sealed class StdioMcpServer : IAsyncDisposable
         }
     }
 
-    private static Dictionary<string, string?> CreateServerEnvironment(string dataDirectory)
+    private static Dictionary<string, string?> CreateServerEnvironment(
+        string dataDirectory,
+        IReadOnlyCollection<string>? testFixtures)
     {
         var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
         environment["MAILKIT_AGENT_DATA_DIR"] = dataDirectory;
         environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
         environment["DOTNET_NOLOGO"] = "1";
+        if (testFixtures is { Count: > 0 })
+            environment["MAILKIT_AGENT_TEST_MODE"] = "1";
         return environment;
     }
 }
