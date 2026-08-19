@@ -6,22 +6,28 @@ using MailKit.Agent.Mail.Attachments;
 
 namespace MailKit.Agent.Mail.Tests.Attachments;
 
+[NonParallelizable]
 public sealed class AttachmentServiceTests
 {
     private string testDirectory = null!;
     private string downloadRoot = null!;
+    private List<IDisposable> disposables = null!;
 
     [SetUp]
     public void SetUp()
     {
         testDirectory = Path.Combine(Path.GetTempPath(), "MailKit.Agent.Tests", Guid.NewGuid().ToString("N"));
         downloadRoot = Path.Combine(testDirectory, "downloads");
+        disposables = new List<IDisposable>();
         Directory.CreateDirectory(downloadRoot);
     }
 
     [TearDown]
     public void TearDown()
     {
+        foreach (IDisposable disposable in disposables)
+            disposable.Dispose();
+
         if (Directory.Exists(testDirectory))
             Directory.Delete(testDirectory, recursive: true);
     }
@@ -173,16 +179,271 @@ public sealed class AttachmentServiceTests
         });
     }
 
+    [Test]
+    [Platform("Win")]
+    public async Task PinnedRootPreventsSwapBeforeIdentityBasedCommit()
+    {
+        string movedRoot = Path.Combine(testDirectory, "moved-downloads");
+        string outside = Path.Combine(testDirectory, "outside");
+        Directory.CreateDirectory(outside);
+        var inner = new AtomicAttachmentFileFactory(new AttachmentPathPolicy(downloadRoot));
+        var swapping = new RootSwappingFileFactory(inner, downloadRoot, movedRoot, outside);
+        var service = CreateService(swapping, maxBytes: 1024);
+        using var source = new MemoryStream(new byte[] { 1, 2, 3 });
+
+        AttachmentSaveResult result = await service.SaveAsync(
+            source, Descriptor("saved.bin"), null, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(swapping.SwapException, Is.TypeOf<IOException>());
+            Assert.That(result.Path, Is.EqualTo(Path.Combine(downloadRoot, "saved.bin")));
+            Assert.That(File.ReadAllBytes(result.Path), Is.EqualTo(new byte[] { 1, 2, 3 }));
+            Assert.That(File.Exists(Path.Combine(outside, "saved.bin")), Is.False);
+            Assert.That(Directory.Exists(movedRoot), Is.False);
+        });
+    }
+
+    [Test]
+    [Platform("Win")]
+    public void ReplacedRootBeforeTransactionIsRejectedByConfiguredIdentity()
+    {
+        string originalRoot = Path.Combine(testDirectory, "original-downloads");
+        var inner = new AtomicAttachmentFileFactory(new AttachmentPathPolicy(downloadRoot));
+        var service = CreateService(inner, maxBytes: 1024);
+        Directory.Move(downloadRoot, originalRoot);
+        Directory.CreateDirectory(downloadRoot);
+        using var source = new MemoryStream(new byte[] { 1, 2, 3 });
+
+        var exception = Assert.ThrowsAsync<MailOperationException>(async () =>
+            await service.SaveAsync(source, Descriptor("saved.bin"), null, CancellationToken.None));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Error.Code, Is.EqualTo("attachment.path_identity_changed"));
+            Assert.That(File.Exists(Path.Combine(downloadRoot, "saved.bin")), Is.False);
+            Assert.That(File.Exists(Path.Combine(originalRoot, "saved.bin")), Is.False);
+        });
+    }
+
+    [Test]
+    [Platform("Win")]
+    public async Task CleanupByOpenFileIdentityDoesNotDeleteReplacementAtTemporaryPath()
+    {
+        var inner = new AtomicAttachmentFileFactory(new AttachmentPathPolicy(downloadRoot));
+        var replacing = new ReplacementAfterDisposeFileFactory(inner, "replacement");
+        var service = CreateService(replacing, maxBytes: 1024);
+        using var source = new MemoryStream(new byte[] { 1, 2, 3 });
+
+        AttachmentSaveResult result = await service.SaveAsync(
+            source, Descriptor("saved.bin"), null, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(File.ReadAllBytes(result.Path), Is.EqualTo(new byte[] { 1, 2, 3 }));
+            Assert.That(replacing.ReplacementPath, Is.Not.Null);
+            Assert.That(File.ReadAllText(replacing.ReplacementPath!), Is.EqualTo("replacement"));
+        });
+    }
+
+    [Test]
+    public void ResolvesDownloadAndUploadRootsOnlyFromSpecifiedEnvironmentVariables()
+    {
+        string configuredDownload = Path.Combine(testDirectory, "configured-downloads");
+        string firstUpload = Path.Combine(testDirectory, "upload-one");
+        string secondUpload = Path.Combine(testDirectory, "upload-two");
+
+        WithMailFileEnvironment(
+            configuredDownload,
+            $"{firstUpload}{Path.PathSeparator}{secondUpload}",
+            () =>
+            {
+                MailFileOptions options = MailFileOptionsResolver.Resolve(testDirectory);
+                Assert.Multiple(() =>
+                {
+                    Assert.That(options.DownloadRoot, Is.EqualTo(Path.GetFullPath(configuredDownload)));
+                    Assert.That(options.UploadRoots, Is.EqualTo(new[]
+                    {
+                        Path.GetFullPath(firstUpload),
+                        Path.GetFullPath(secondUpload)
+                    }));
+                });
+            });
+    }
+
+    [Test]
+    public void DefaultsDownloadRootUnderDataAndLeavesUploadRootsEmpty()
+    {
+        WithMailFileEnvironment(null, null, () =>
+        {
+            MailFileOptions options = MailFileOptionsResolver.Resolve(testDirectory);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(options.DownloadRoot,
+                    Is.EqualTo(Path.GetFullPath(Path.Combine(testDirectory, "downloads"))));
+                Assert.That(options.UploadRoots, Is.Empty);
+            });
+        });
+    }
+
+    [Test]
+    public void EmptyUploadRootsRejectAttachmentReads()
+    {
+        var policy = new UploadAttachmentPathPolicy(Array.Empty<string>());
+
+        var exception = Assert.Throws<MailOperationException>(() =>
+            policy.ResolveForRead(Path.Combine(testDirectory, "attachment.bin")));
+
+        Assert.That(exception!.Error.Code, Is.EqualTo("attachment.upload_roots_required"));
+    }
+
     private AttachmentService CreateService(long maxBytes) => CreateService(downloadRoot, maxBytes);
 
-    private AttachmentService CreateService(long maxAttachmentBytes, long maxDownloadBytesPerCall) =>
-        new(new MailFileOptions(downloadRoot, Array.Empty<string>()),
-            new MailSafetyLimits(4096, maxAttachmentBytes, maxDownloadBytesPerCall, 100));
+    private AttachmentService CreateService(IAtomicAttachmentFileFactory fileFactory, long maxBytes) =>
+        Track(new AttachmentService(
+            new MailFileOptions(downloadRoot, Array.Empty<string>()),
+            new MailSafetyLimits(4096, maxBytes, maxBytes, 100), fileFactory));
 
-    private static AttachmentService CreateService(string root, long maxBytes) =>
-        new(new MailFileOptions(root, Array.Empty<string>()),
-            new MailSafetyLimits(4096, maxBytes, maxBytes, 100));
+    private AttachmentService CreateService(long maxAttachmentBytes, long maxDownloadBytesPerCall) =>
+        Track(new AttachmentService(
+            new MailFileOptions(downloadRoot, Array.Empty<string>()),
+            new MailSafetyLimits(4096, maxAttachmentBytes, maxDownloadBytesPerCall, 100)));
+
+    private AttachmentService CreateService(string root, long maxBytes) =>
+        Track(new AttachmentService(
+            new MailFileOptions(root, Array.Empty<string>()),
+            new MailSafetyLimits(4096, maxBytes, maxBytes, 100)));
+
+    private AttachmentService Track(AttachmentService service)
+    {
+        disposables.Add(service);
+        return service;
+    }
 
     private static AttachmentDescriptor Descriptor(string fileName) =>
         new("part-7", fileName, "application/octet-stream", 4, false, null);
+
+    private static void WithMailFileEnvironment(
+        string? downloadRoot,
+        string? uploadRoots,
+        TestDelegate assertion)
+    {
+        const string downloadName = "MAILKIT_AGENT_DOWNLOAD_ROOT";
+        const string uploadsName = "MAILKIT_AGENT_UPLOAD_ROOTS";
+        string? originalDownload = Environment.GetEnvironmentVariable(downloadName);
+        string? originalUploads = Environment.GetEnvironmentVariable(uploadsName);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(downloadName, downloadRoot);
+            Environment.SetEnvironmentVariable(uploadsName, uploadRoots);
+            assertion();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(downloadName, originalDownload);
+            Environment.SetEnvironmentVariable(uploadsName, originalUploads);
+        }
+    }
+
+    private sealed class RootSwappingFileFactory : IAtomicAttachmentFileFactory
+    {
+        private readonly IAtomicAttachmentFileFactory inner;
+        private readonly string root;
+        private readonly string movedRoot;
+        private readonly string outside;
+
+        public RootSwappingFileFactory(
+            IAtomicAttachmentFileFactory inner,
+            string root,
+            string movedRoot,
+            string outside)
+        {
+            this.inner = inner;
+            this.root = root;
+            this.movedRoot = movedRoot;
+            this.outside = outside;
+        }
+
+        public Exception? SwapException { get; private set; }
+
+        public IAtomicAttachmentFile Create(string destinationName)
+        {
+            IAtomicAttachmentFile file = inner.Create(destinationName);
+            return new DelegatingAtomicAttachmentFile(file, beforeCommit: () =>
+            {
+                try
+                {
+                    Directory.Move(root, movedRoot);
+                    Directory.CreateSymbolicLink(root, outside);
+                }
+                catch (Exception exception)
+                {
+                    SwapException = exception;
+                }
+            });
+        }
+    }
+
+    private sealed class ReplacementAfterDisposeFileFactory : IAtomicAttachmentFileFactory
+    {
+        private readonly IAtomicAttachmentFileFactory inner;
+        private readonly string replacement;
+
+        public ReplacementAfterDisposeFileFactory(
+            IAtomicAttachmentFileFactory inner,
+            string replacement)
+        {
+            this.inner = inner;
+            this.replacement = replacement;
+        }
+
+        public string? ReplacementPath { get; private set; }
+
+        public IAtomicAttachmentFile Create(string destinationName)
+        {
+            IAtomicAttachmentFile file = inner.Create(destinationName);
+            return new DelegatingAtomicAttachmentFile(file, afterDispose: () =>
+            {
+                string temporaryPath = file.TemporaryPath ??
+                    throw new InvalidOperationException("The Windows transaction must expose its temporary path.");
+                ReplacementPath = temporaryPath;
+                File.WriteAllText(temporaryPath, replacement);
+            });
+        }
+    }
+
+    private sealed class DelegatingAtomicAttachmentFile : IAtomicAttachmentFile
+    {
+        private readonly IAtomicAttachmentFile inner;
+        private readonly Action? beforeCommit;
+        private readonly Action? afterDispose;
+
+        public DelegatingAtomicAttachmentFile(
+            IAtomicAttachmentFile inner,
+            Action? beforeCommit = null,
+            Action? afterDispose = null)
+        {
+            this.inner = inner;
+            this.beforeCommit = beforeCommit;
+            this.afterDispose = afterDispose;
+        }
+
+        public Stream Stream => inner.Stream;
+        public string DestinationPath => inner.DestinationPath;
+        public string? TemporaryPath => inner.TemporaryPath;
+
+        public void Commit()
+        {
+            beforeCommit?.Invoke();
+            inner.Commit();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await inner.DisposeAsync();
+            afterDispose?.Invoke();
+        }
+    }
 }

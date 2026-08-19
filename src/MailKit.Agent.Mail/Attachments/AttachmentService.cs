@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using MailKit.Agent.Core.Errors;
 using MailKit.Agent.Core.Mail;
 using MailKit.Agent.Core.Policy;
@@ -5,25 +6,36 @@ using MailKit.Agent.Core.Storage;
 
 namespace MailKit.Agent.Mail.Attachments;
 
-public sealed class AttachmentService : IAttachmentWriter
+public sealed class AttachmentService : IAttachmentWriter, IDisposable
 {
     private const int BufferSize = 81920;
-    private readonly AttachmentPathPolicy pathPolicy;
+    private readonly IAtomicAttachmentFileFactory fileFactory;
+    private readonly IDisposable? ownedFileFactory;
     private readonly long maxAttachmentBytes;
 
     public AttachmentService(MailFileOptions fileOptions, MailSafetyLimits limits)
+        : this(fileOptions, limits, fileFactory: null)
+    {
+    }
+
+    internal AttachmentService(
+        MailFileOptions fileOptions,
+        MailSafetyLimits limits,
+        IAtomicAttachmentFileFactory? fileFactory)
     {
         ArgumentNullException.ThrowIfNull(fileOptions);
         ArgumentNullException.ThrowIfNull(limits);
         if (limits.MaxAttachmentBytes <= 0 || limits.MaxDownloadBytesPerCall <= 0)
             throw new ArgumentOutOfRangeException(nameof(limits));
 
-        pathPolicy = new AttachmentPathPolicy(fileOptions.DownloadRoot);
+        var pathPolicy = new AttachmentPathPolicy(fileOptions.DownloadRoot);
         maxAttachmentBytes = Math.Min(limits.MaxAttachmentBytes, limits.MaxDownloadBytesPerCall);
 
         pathPolicy.EnsureExistingComponentsAreNotReparsePoints(pathPolicy.Root);
         Directory.CreateDirectory(pathPolicy.Root);
         pathPolicy.EnsureExistingComponentsAreNotReparsePoints(pathPolicy.Root);
+        this.fileFactory = fileFactory ?? new AtomicAttachmentFileFactory(pathPolicy);
+        ownedFileFactory = fileFactory is null ? (IDisposable)this.fileFactory : null;
     }
 
     public async Task<AttachmentSaveResult> SaveAsync(
@@ -38,52 +50,38 @@ public sealed class AttachmentService : IAttachmentWriter
             throw new ArgumentException("The attachment stream must be readable.", nameof(source));
 
         string candidateName = destinationName ?? descriptor.FileName ?? string.Empty;
-        string destination = pathPolicy.ResolveDestination(candidateName);
-        pathPolicy.EnsureExistingComponentsAreNotReparsePoints(destination);
-
-        string tempPath = Path.Combine(pathPolicy.Root, $"{Guid.NewGuid():N}.tmp");
         long bytesWritten = 0;
 
         try
         {
-            await using (var output = new FileStream(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                BufferSize,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            await using IAtomicAttachmentFile file = fileFactory.Create(candidateName);
+            Stream output = file.Stream;
+            byte[] buffer = new byte[BufferSize];
+            while (true)
             {
-                byte[] buffer = new byte[BufferSize];
-                while (true)
+                int bytesRead = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (bytesRead == 0)
+                    break;
+
+                if (bytesWritten > maxAttachmentBytes - bytesRead)
                 {
-                    int bytesRead = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                    if (bytesRead == 0)
-                        break;
-
-                    if (bytesWritten > maxAttachmentBytes - bytesRead)
-                    {
-                        throw AttachmentPathPolicy.CreatePolicyError(
-                            "attachment.too_large",
-                            "The attachment exceeds the configured size limit.");
-                    }
-
-                    await output.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken)
-                        .ConfigureAwait(false);
-                    bytesWritten += bytesRead;
+                    throw AttachmentPathPolicy.CreatePolicyError(
+                        "attachment.too_large",
+                        "The attachment exceeds the configured size limit.");
                 }
 
-                await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                output.Flush(flushToDisk: true);
+                await output.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken)
+                    .ConfigureAwait(false);
+                bytesWritten += bytesRead;
             }
 
-            pathPolicy.EnsureExistingComponentsAreNotReparsePoints(destination);
-            File.Move(tempPath, destination, overwrite: false);
+            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            file.Commit();
 
             return new AttachmentSaveResult(
                 descriptor.Id,
-                Path.GetFileName(destination),
-                destination,
+                Path.GetFileName(file.DestinationPath),
+                file.DestinationPath,
                 bytesWritten);
         }
         catch (MailOperationException)
@@ -94,13 +92,8 @@ public sealed class AttachmentService : IAttachmentWriter
         {
             throw;
         }
-        catch (IOException) when (File.Exists(destination))
-        {
-            throw AttachmentPathPolicy.CreatePolicyError(
-                "attachment.destination_exists",
-                "The attachment destination already exists.");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+            Win32Exception or PlatformNotSupportedException)
         {
             throw new MailOperationException(new ToolError(
                 "attachment.save_failed",
@@ -110,19 +103,7 @@ public sealed class AttachmentService : IAttachmentWriter
                 null,
                 null));
         }
-        finally
-        {
-            try
-            {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-        }
     }
+
+    public void Dispose() => ownedFileFactory?.Dispose();
 }
