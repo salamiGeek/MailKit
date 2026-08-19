@@ -12,7 +12,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.5.1" />
-    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <PackageReference Include="NUnit" Version="4.5.1" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.2.0" />
   </ItemGroup>
@@ -22,10 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\MailKit.Agent.Auth\MailKit.Agent.Auth.csproj" />
-    <ProjectReference Include="..\..\src\MailKit.Agent.Core\MailKit.Agent.Core.csproj" />
     <ProjectReference Include="..\..\src\MailKit.Agent.Mail\MailKit.Agent.Mail.csproj" />
-    <ProjectReference Include="..\..\src\MailKit.Agent.Mcp\MailKit.Agent.Mcp.csproj" />
   </ItemGroup>
 
 </Project>
