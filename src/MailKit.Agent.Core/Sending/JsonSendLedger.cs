@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MailKit.Agent.Core.Accounts;
@@ -8,13 +9,20 @@ namespace MailKit.Agent.Core.Sending;
 /// Crash-safe send idempotency ledger. One JSON file per account and idempotency-key
 /// hash under <c>&lt;data&gt;/send-ledger/&lt;account_id&gt;/&lt;idempotency_hash&gt;.json</c>,
 /// written through a create-new temporary file, flushed, and atomically moved over the
-/// destination. An <see cref="SendState.Attempting"/> record left behind by an earlier
-/// process is treated as terminal <see cref="SendState.Indeterminate"/> on load and can
-/// never trigger another SMTP invocation.
+/// destination. All operations on one key — load, create, and transition — are
+/// serialized by a per-key asynchronous lock held across both the state validation and
+/// the durable write, so concurrent callers can never both observe the previous state
+/// and both proceed. An <see cref="SendState.Attempting"/> record left behind by an
+/// earlier process is treated as terminal <see cref="SendState.Indeterminate"/> on load
+/// and can never trigger another SMTP invocation.
 /// </summary>
 public sealed class JsonSendLedger : ISendLedger
 {
     private static readonly Regex HashPattern = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+
+    // Keyed by the full entry path so every ledger instance in this process that
+    // targets the same record is serialized, not just callers of one instance.
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> KeyLocks = new();
 
     private readonly string ledgerDirectory;
     private readonly object gate = new();
@@ -26,13 +34,19 @@ public sealed class JsonSendLedger : ISendLedger
         ledgerDirectory = Path.Combine(dataDirectory, "send-ledger");
     }
 
-    public Task<SendLedgerEntry?> FindAsync(
+    public async Task<SendLedgerEntry?> FindAsync(
         string accountId, string idempotencyKeyHash, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (gate)
+        string path = GetEntryPath(accountId, idempotencyKeyHash);
+        SemaphoreSlim keyLock = KeyLocks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        await keyLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return Task.FromResult(Load_unlocked(accountId, idempotencyKeyHash));
+            return Load(path, accountId, idempotencyKeyHash);
+        }
+        finally
+        {
+            keyLock.Release();
         }
     }
 
@@ -47,20 +61,25 @@ public sealed class JsonSendLedger : ISendLedger
         }
 
         ValidateKeyArguments(entry.AccountId, entry.IdempotencyKeyHash);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        lock (gate)
+        string path = GetEntryPath(entry.AccountId, entry.IdempotencyKeyHash);
+        SemaphoreSlim keyLock = KeyLocks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        await keyLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            SendLedgerEntry? existing = Load_unlocked(entry.AccountId, entry.IdempotencyKeyHash);
+            SendLedgerEntry? existing = Load(path, entry.AccountId, entry.IdempotencyKeyHash);
             if (existing is not null && existing.State != SendState.Prepared)
             {
                 throw new InvalidOperationException(
                     "A terminal send ledger record already exists for this idempotency key.");
             }
-        }
 
-        await WriteAsync(entry, cancellationToken).ConfigureAwait(false);
-        return entry;
+            await WriteAsync(entry, path, cancellationToken).ConfigureAwait(false);
+            return entry;
+        }
+        finally
+        {
+            keyLock.Release();
+        }
     }
 
     public async Task<SendLedgerEntry> TransitionAsync(
@@ -74,13 +93,14 @@ public sealed class JsonSendLedger : ISendLedger
         ValidateKeyArguments(accountId, idempotencyKeyHash);
         if (!Enum.IsDefined(targetState))
             throw new ArgumentOutOfRangeException(nameof(targetState));
-        cancellationToken.ThrowIfCancellationRequested();
 
+        string path = GetEntryPath(accountId, idempotencyKeyHash);
         string key = Key(accountId, idempotencyKeyHash);
-        SendLedgerEntry updated;
-        lock (gate)
+        SemaphoreSlim keyLock = KeyLocks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        await keyLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            SendLedgerEntry current = Load_unlocked(accountId, idempotencyKeyHash)
+            SendLedgerEntry current = Load(path, accountId, idempotencyKeyHash)
                 ?? throw new InvalidOperationException(
                     "No send ledger record exists for this idempotency key.");
             SendState currentState = current.State;
@@ -90,7 +110,7 @@ public sealed class JsonSendLedger : ISendLedger
                     $"The send state transition {currentState} -> {targetState} is not allowed.");
             }
 
-            updated = targetState switch
+            SendLedgerEntry updated = targetState switch
             {
                 SendState.Attempting => current with
                 {
@@ -107,16 +127,31 @@ public sealed class JsonSendLedger : ISendLedger
             };
 
             if (targetState == SendState.Attempting)
-                liveAttemptingKeys.Add(key);
-        }
+            {
+                lock (gate)
+                {
+                    liveAttemptingKeys.Add(key);
+                }
+            }
 
-        try
-        {
-            await WriteAsync(updated, cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            if (targetState == SendState.Attempting)
+            try
+            {
+                await WriteAsync(updated, path, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (targetState == SendState.Attempting)
+                {
+                    lock (gate)
+                    {
+                        liveAttemptingKeys.Remove(key);
+                    }
+                }
+
+                throw;
+            }
+
+            if (targetState != SendState.Attempting)
             {
                 lock (gate)
                 {
@@ -124,18 +159,12 @@ public sealed class JsonSendLedger : ISendLedger
                 }
             }
 
-            throw;
+            return updated;
         }
-
-        await WriteAsync(updated, cancellationToken).ConfigureAwait(false);
-
-        lock (gate)
+        finally
         {
-            if (targetState != SendState.Attempting)
-                liveAttemptingKeys.Remove(key);
+            keyLock.Release();
         }
-
-        return updated;
     }
 
     private static bool IsAllowedTransition(SendState current, SendState target) =>
@@ -148,9 +177,8 @@ public sealed class JsonSendLedger : ISendLedger
             _ => false
         };
 
-    private SendLedgerEntry? Load_unlocked(string accountId, string idempotencyKeyHash)
+    private SendLedgerEntry? Load(string path, string accountId, string idempotencyKeyHash)
     {
-        var path = GetEntryPath(accountId, idempotencyKeyHash);
         if (!File.Exists(path))
             return null;
 
@@ -160,18 +188,22 @@ public sealed class JsonSendLedger : ISendLedger
         if (entry is null)
             return null;
 
-        return entry.State == SendState.Attempting &&
-            !liveAttemptingKeys.Contains(Key(accountId, idempotencyKeyHash))
+        bool live;
+        lock (gate)
+        {
+            live = liveAttemptingKeys.Contains(Key(accountId, idempotencyKeyHash));
+        }
+
+        return entry.State == SendState.Attempting && !live
             ? entry with { State = SendState.Indeterminate }
             : entry;
     }
 
     private async Task WriteAsync(
-        SendLedgerEntry entry, CancellationToken cancellationToken)
+        SendLedgerEntry entry, string path, CancellationToken cancellationToken)
     {
-        var destination = GetEntryPath(entry.AccountId, entry.IdempotencyKeyHash);
-        var temporary = $"{destination}.{Guid.NewGuid():N}.tmp";
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         try
         {
@@ -188,7 +220,7 @@ public sealed class JsonSendLedger : ISendLedger
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await MoveOverDestinationAsync(temporary, destination, cancellationToken)
+            await MoveOverDestinationAsync(temporary, path, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
