@@ -10,14 +10,19 @@ using MimeKit;
 namespace MailKit.Agent.Mail.Smtp;
 
 /// <summary>
-/// Composes an <see cref="OutgoingMessageDraft"/> into deterministic MIME bytes plus a
-/// deterministic Message-Id using MimeKit. The Message-Id is the lowercase base64url
-/// SHA-256 of <c>account_id + NUL + idempotency_key</c> followed by
-/// <c>@mailkit-agent.local</c>, so retrying the same idempotent send reproduces identical
-/// bytes. The serialized MIME never contains Bcc headers; blind-copy delivery happens
-/// exclusively through the SMTP envelope built by <see cref="SendApplication"/>.
-/// Attachment files are opened through <see cref="UploadAttachmentPathPolicy"/> so
-/// traversal, reparse-point, and identity attacks cannot reach arbitrary files.
+/// Composes an <see cref="OutgoingMessageDraft"/> into MIME bytes plus a deterministic
+/// Message-Id using MimeKit. The Message-Id is the lowercase base64url SHA-256 of
+/// <c>account_id + NUL + idempotency_key</c> followed by <c>@mailkit-agent.local</c>,
+/// so it is stable for a given idempotency key regardless of when composition runs.
+/// The serialized MIME carries a <c>Date</c> header taken from the injected
+/// <see cref="TimeProvider"/> (MimeKit's default constructor would stamp the wall
+/// clock), so identical bytes are produced only for identical clock readings;
+/// redelivery protection comes from the send ledger keyed by the idempotency key,
+/// not from byte identity. The serialized MIME never contains Bcc headers; blind-copy
+/// delivery happens exclusively through the SMTP envelope built by
+/// <see cref="SendApplication"/>. Attachment files are opened through
+/// <see cref="UploadAttachmentPathPolicy"/> so traversal, reparse-point, and identity
+/// attacks cannot reach arbitrary files.
 /// </summary>
 public sealed class OutgoingMessageComposer : IOutgoingMessageComposer
 {
@@ -29,11 +34,16 @@ public sealed class OutgoingMessageComposer : IOutgoingMessageComposer
 
     private readonly MailFileOptions mailFileOptions;
     private readonly long maxMessageBytes;
+    private readonly TimeProvider timeProvider;
 
-    public OutgoingMessageComposer(MailFileOptions? mailFileOptions = null, long? maxMessageBytes = null)
+    public OutgoingMessageComposer(
+        MailFileOptions? mailFileOptions = null,
+        long? maxMessageBytes = null,
+        TimeProvider? timeProvider = null)
     {
         this.mailFileOptions = mailFileOptions ?? MailFileOptionsResolver.Resolve(AppDataPaths.Resolve());
         this.maxMessageBytes = maxMessageBytes ?? DefaultMaxMessageBytes;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         if (this.maxMessageBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxMessageBytes));
     }
@@ -71,6 +81,8 @@ public sealed class OutgoingMessageComposer : IOutgoingMessageComposer
         {
             MessageId = $"{ToBase64Url(seed)}@{MessageIdDomain}"
         };
+        // Pin Date to the injected clock; MimeKit's constructor stamps DateTimeOffset.Now.
+        message.Date = timeProvider.GetUtcNow();
         if (draft.Subject is not null)
             message.Subject = draft.Subject;
         message.From.Add(sender);

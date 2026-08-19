@@ -157,10 +157,11 @@ public sealed class OutgoingMessageComposerTests
     }
 
     [Test]
-    public async Task IdenticalDraftAndKeyReproduceIdenticalBytes()
+    public async Task IdenticalDraftKeyAndClockReadingReproduceIdenticalBytes()
     {
-        OutgoingMessageComposer first = CreateComposer();
-        OutgoingMessageComposer second = CreateComposer();
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 19, 4, 0, 0, TimeSpan.Zero));
+        OutgoingMessageComposer first = CreateComposer(timeProvider: clock);
+        OutgoingMessageComposer second = CreateComposer(timeProvider: clock);
 
         ComposedOutgoingMessage a = await first.ComposeAsync(
             Profile(), Draft(textBody: "Numbers attached."), "idem-007", CancellationToken.None);
@@ -169,13 +170,39 @@ public sealed class OutgoingMessageComposerTests
         ComposedOutgoingMessage c = await second.ComposeAsync(
             Profile(), Draft(textBody: "Numbers attached."), "idem-008", CancellationToken.None);
 
+        MimeMessage parsed = Parse(a);
         Assert.Multiple(() =>
         {
             Assert.That(b.MimeMessage, Is.EqualTo(a.MimeMessage),
-                "The same account, draft, and idempotency key must reproduce identical bytes.");
+                "The same account, draft, key, and clock reading must reproduce identical bytes.");
             Assert.That(b.MessageId, Is.EqualTo(a.MessageId));
             Assert.That(c.MessageId, Is.Not.EqualTo(a.MessageId));
             Assert.That(c.MimeMessage, Is.Not.EqualTo(a.MimeMessage));
+            Assert.That(parsed.Date, Is.EqualTo(clock.UtcNow),
+                "The Date header must come from the injected clock, not the wall clock.");
+        });
+    }
+
+    [Test]
+    public async Task MessageIdIsStableAcrossDifferentClockReadings()
+    {
+        // Byte identity is clock-scoped (the Date header changes), but message
+        // identity — the property redelivery protection relies on — is not.
+        var earlier = new MutableTimeProvider(new DateTimeOffset(2026, 8, 19, 4, 0, 0, TimeSpan.Zero));
+        var later = new MutableTimeProvider(new DateTimeOffset(2026, 8, 19, 4, 0, 5, TimeSpan.Zero));
+
+        ComposedOutgoingMessage a = await CreateComposer(timeProvider: earlier).ComposeAsync(
+            Profile(), Draft(textBody: "Numbers attached."), "idem-007", CancellationToken.None);
+        ComposedOutgoingMessage b = await CreateComposer(timeProvider: later).ComposeAsync(
+            Profile(), Draft(textBody: "Numbers attached."), "idem-007", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(b.MessageId, Is.EqualTo(a.MessageId),
+                "The Message-Id must depend only on the account and idempotency key.");
+            Assert.That(Parse(b).Date, Is.Not.EqualTo(Parse(a).Date));
+            Assert.That(b.MimeMessage, Is.Not.EqualTo(a.MimeMessage),
+                "Different clock readings legitimately produce different Date headers.");
         });
     }
 
@@ -385,9 +412,11 @@ public sealed class OutgoingMessageComposerTests
         htmlBody,
         null);
 
-    private OutgoingMessageComposer CreateComposer(long? maxMessageBytes = null) => new(
+    private OutgoingMessageComposer CreateComposer(
+        long? maxMessageBytes = null, TimeProvider? timeProvider = null) => new(
         new MailFileOptions(Path.Combine(testDirectory, "downloads"), [uploadRoot]),
-        maxMessageBytes);
+        maxMessageBytes,
+        timeProvider);
 
     private static string ExpectedMessageId(string accountId, string idempotencyKey)
     {
@@ -411,5 +440,12 @@ public sealed class OutgoingMessageComposerTests
         string path = Path.Combine(uploadRoot, fileName);
         await File.WriteAllTextAsync(path, content);
         return path;
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow => utcNow;
+
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }
