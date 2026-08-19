@@ -215,6 +215,78 @@ public class JsonSendLedgerTests
         Assert.That(temporaryFiles, Is.Empty);
     }
 
+    [Test]
+    public async Task EachLedgerOperationPerformsExactlyOneDurableWrite()
+    {
+        using var temp = new TemporaryDirectory();
+        var ledger = new JsonSendLedger(temp.Path);
+        var directory = Path.Combine(temp.Path, "send-ledger", AccountId);
+        Directory.CreateDirectory(directory);
+        var temporaryFilesCreated = 0;
+        using var watcher = new FileSystemWatcher(directory)
+        {
+            Filter = "*.tmp",
+            InternalBufferSize = 64 * 1024,
+            EnableRaisingEvents = true
+        };
+        watcher.Created += (_, _) => Interlocked.Increment(ref temporaryFilesCreated);
+
+        await ledger.CreateAsync(PreparedEntry(), CancellationToken.None);
+        await ledger.TransitionAsync(
+            AccountId, KeyHash, SendState.Attempting, Now.AddSeconds(5), "corr-1", CancellationToken.None);
+        await ledger.TransitionAsync(
+            AccountId, KeyHash, SendState.Succeeded, Now.AddSeconds(10), "corr-1", CancellationToken.None);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (temporaryFilesCreated < 3 && DateTime.UtcNow < deadline)
+            await Task.Delay(20, CancellationToken.None);
+        await Task.Delay(300, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(temporaryFilesCreated, Is.EqualTo(3),
+                "Exactly one durable write per ledger operation: create plus two transitions.");
+            Assert.That(Directory.EnumerateFiles(directory, "*.tmp*"), Is.Empty);
+        });
+    }
+
+    [Test]
+    public async Task ConcurrentSameKeyTransitionsAllowExactlyOneAttempting()
+    {
+        using var temp = new TemporaryDirectory();
+        var ledger = new JsonSendLedger(temp.Path);
+        await ledger.CreateAsync(PreparedEntry(), CancellationToken.None);
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transitions = Enumerable.Range(1, 8).Select(_ => Task.Run(async () =>
+        {
+            await start.Task;
+            try
+            {
+                return await ledger.TransitionAsync(
+                    AccountId, KeyHash, SendState.Attempting, Now.AddSeconds(5), "corr-race",
+                    CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                return null;
+            }
+        })).ToArray();
+
+        start.SetResult();
+        var outcomes = await Task.WhenAll(transitions);
+        var found = await ledger.FindAsync(AccountId, KeyHash, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(outcomes.Count(entry => entry is not null), Is.EqualTo(1),
+                "Only one concurrent transition may enter Attempting.");
+            Assert.That(outcomes.Single(entry => entry is not null)!.State, Is.EqualTo(SendState.Attempting));
+            Assert.That(outcomes.Count(entry => entry is null), Is.EqualTo(7));
+            Assert.That(found!.State, Is.EqualTo(SendState.Attempting));
+        });
+    }
+
     [TestCase("../escape")]
     [TestCase("..\\escape")]
     [TestCase("UPPERCASE")]

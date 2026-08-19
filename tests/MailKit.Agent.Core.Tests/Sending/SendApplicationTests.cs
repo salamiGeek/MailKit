@@ -285,6 +285,49 @@ public class SendApplicationTests
     }
 
     [Test]
+    public async Task ConcurrentSameKeyCommitsInvokeSmtpExactlyOnce()
+    {
+        using var fixture = CreateFixture();
+        var first = await PrepareAsync(fixture, "idem-race", "session-a");
+        var second = await PrepareAsync(fixture, "idem-race", "session-a");
+        Assert.That(second.ConfirmationToken, Is.Not.EqualTo(first.ConfirmationToken),
+            "The two preparations must hold distinct one-time confirmations.");
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commits = new[]
+        {
+            Task.Run(async () =>
+            {
+                await start.Task;
+                return await fixture.Application.CommitAsync(
+                    first.ConfirmationToken, "session-a", CancellationToken.None);
+            }),
+            Task.Run(async () =>
+            {
+                await start.Task;
+                return await fixture.Application.CommitAsync(
+                    second.ConfirmationToken, "session-a", CancellationToken.None);
+            })
+        };
+        start.SetResult();
+        var results = await Task.WhenAll(commits);
+
+        ToolResult<SendStatus> winner = results.Single(result => result.Ok);
+        ToolResult<SendStatus> loser = results.Single(result => !result.Ok);
+        ToolResult<SendStatus> status = await fixture.Application.GetStatusAsync(
+            "personal", "idem-race", CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1),
+                "A single idempotency key must never be delivered twice, even under concurrent commits.");
+            Assert.That(winner.Data!.State, Is.EqualTo(SendState.Succeeded));
+            Assert.That(loser.Error!.Code, Is.EqualTo("send.idempotency_conflict"));
+            Assert.That(loser.Error.Category, Is.EqualTo(ErrorCategory.Conflict));
+            Assert.That(status.Data!.State, Is.EqualTo(SendState.Succeeded));
+        });
+    }
+
+    [Test]
     public async Task TokenBindsIdentityWithoutMessageContent()
     {
         using var fixture = CreateFixture();
