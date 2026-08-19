@@ -12,6 +12,15 @@ public interface IPop3Gateway
     Task<MessageContent> ReadAsync(AccountProfile profile, PasswordCredentialLease credential,
         MessageReference reference, BodyMode bodyMode, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(
+        AccountProfile profile, PasswordCredentialLease credential,
+        MessageReference reference, CancellationToken cancellationToken);
+
+    Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(
+        AccountProfile profile, PasswordCredentialLease credential,
+        MessageReference reference, string attachmentId,
+        CancellationToken cancellationToken);
+
     Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential,
         MessageReference reference, string attachmentId, CancellationToken cancellationToken);
 }

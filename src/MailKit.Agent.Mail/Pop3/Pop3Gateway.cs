@@ -138,6 +138,49 @@ public sealed class Pop3Gateway : IPop3Gateway
         }, cancellationToken);
     }
 
+    public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(
+        AccountProfile profile,
+        PasswordCredentialLease credential,
+        MessageReference reference,
+        CancellationToken cancellationToken)
+    {
+        ValidateReference(profile, reference);
+        return WithClientAsync(profile, credential, "attachment_list", async client =>
+        {
+            using MimeMessage message = await GetReferencedMessageAsync(
+                client, reference, cancellationToken).ConfigureAwait(false);
+            return contentService.Convert(message, BodyMode.SafeText, maxBodyCharacters).Attachments;
+        }, cancellationToken);
+    }
+
+    public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(
+        AccountProfile profile,
+        PasswordCredentialLease credential,
+        MessageReference reference,
+        string attachmentId,
+        CancellationToken cancellationToken)
+    {
+        ValidateReference(profile, reference);
+        ArgumentException.ThrowIfNullOrWhiteSpace(attachmentId);
+        return WithClientAsync(profile, credential, "attachment_save", async client =>
+        {
+            using MimeMessage message = await GetReferencedMessageAsync(
+                client, reference, cancellationToken).ConfigureAwait(false);
+            AttachmentDescriptor? descriptor = contentService
+                .Convert(message, BodyMode.SafeText, maxBodyCharacters)
+                .Attachments
+                .FirstOrDefault(item => string.Equals(
+                    item.Id, attachmentId, StringComparison.Ordinal));
+            MimeEntity? attachment = partLocator.Find(message, attachmentId);
+            if (descriptor is null || attachment is null || !IsAttachment(attachment))
+                throw AttachmentNotFound();
+
+            Stream content = await DecodeAttachmentAsync(attachment, cancellationToken)
+                .ConfigureAwait(false);
+            return new OpenedAttachment(descriptor, content);
+        }, cancellationToken);
+    }
+
     public Task<Stream> OpenAttachmentAsync(
         AccountProfile profile,
         PasswordCredentialLease credential,
@@ -188,6 +231,46 @@ public sealed class Pop3Gateway : IPop3Gateway
                 }
             }
         }, cancellationToken);
+    }
+
+    private async Task<MimeMessage> GetReferencedMessageAsync(
+        Pop3Client client,
+        MessageReference reference,
+        CancellationToken cancellationToken)
+    {
+        int index = await ResolveCurrentIndexAsync(client, reference.Uidl!, cancellationToken)
+            .ConfigureAwait(false);
+        using var scope = CreateScope(cancellationToken);
+        return await client.GetMessageAsync(index, scope.Token).ConfigureAwait(false);
+    }
+
+    private async Task<Stream> DecodeAttachmentAsync(
+        MimeEntity attachment,
+        CancellationToken cancellationToken)
+    {
+        var output = new MemoryStream();
+        try
+        {
+            using var scope = CreateScope(cancellationToken);
+            switch (attachment)
+            {
+                case MimePart { Content: not null } part:
+                    await part.Content.DecodeToAsync(output, scope.Token).ConfigureAwait(false);
+                    break;
+                case MessagePart { Message: not null } messagePart:
+                    await messagePart.Message.WriteToAsync(output, scope.Token).ConfigureAwait(false);
+                    break;
+                default:
+                    throw AttachmentNotFound();
+            }
+            output.Position = 0;
+            return output;
+        }
+        catch
+        {
+            output.Dispose();
+            throw;
+        }
     }
 
     private async Task<IReadOnlyList<string>> LoadStableUidlsAsync(

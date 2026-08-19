@@ -138,6 +138,40 @@ public class MailboxApplicationTests
     }
 
     [Test]
+    public async Task SearchRejectsNullCriteriaWithStableValidationFailure()
+    {
+        var fixture = CreateFixture();
+
+        ToolResult<MessagePage> result = await fixture.Application.SearchImapAsync(
+            "personal", "INBOX", null!, 10, null, CancellationToken.None);
+
+        AssertFailure(result, "validation.invalid_search_criteria", ErrorCategory.Validation);
+    }
+
+    [TestCase("")]
+    [TestCase("   ")]
+    public async Task ImapListRejectsBlankFolderWithStableValidationFailure(string folderId)
+    {
+        var fixture = CreateFixture();
+
+        ToolResult<MessagePage> result = await fixture.Application.ListImapAsync(
+            "personal", folderId, 10, null, CancellationToken.None);
+
+        AssertFailure(result, "validation.invalid_folder_id", ErrorCategory.Validation);
+    }
+
+    [Test]
+    public async Task SearchRejectsBlankFolderWithStableValidationFailure()
+    {
+        var fixture = CreateFixture();
+
+        ToolResult<MessagePage> result = await fixture.Application.SearchImapAsync(
+            "personal", " ", new MessageSearchCriteria(), 10, null, CancellationToken.None);
+
+        AssertFailure(result, "validation.invalid_folder_id", ErrorCategory.Validation);
+    }
+
+    [Test]
     public async Task ReadPropagatesUidValidityConflictAsStableFailure()
     {
         var conflict = new ToolError(
@@ -195,6 +229,39 @@ public class MailboxApplicationTests
 
         AssertFailure(result, "policy.batch_limit_exceeded", ErrorCategory.Policy);
         Assert.That(gateway.MarkReadCalls, Is.Zero);
+    }
+
+    [Test]
+    public async Task MarkReadRejectsNullReferencesWithStableValidationFailure()
+    {
+        var fixture = CreateFixture();
+
+        ToolResult<int> result = await fixture.Application.MarkReadAsync(
+            null!, true, CancellationToken.None);
+
+        AssertFailure(result, "validation.invalid_references", ErrorCategory.Validation);
+    }
+
+    [Test]
+    public async Task ListImapRejectsActualReturnedMessageCountOverPolicyLimit()
+    {
+        var gateway = new FakeImapGateway
+        {
+            Page = new MessagePage(
+            [
+                Envelope(MessageReference.ForImap("personal", "INBOX", 7, 1)),
+                Envelope(MessageReference.ForImap("personal", "INBOX", 7, 2))
+            ],
+            null)
+        };
+        var fixture = CreateFixture(
+            imap: gateway,
+            policy: new OperationPolicy(new PolicyLimits(1, int.MaxValue)));
+
+        ToolResult<MessagePage> result = await fixture.Application.ListImapAsync(
+            "personal", "INBOX", 1, null, CancellationToken.None);
+
+        AssertFailure(result, "policy.batch_limit_exceeded", ErrorCategory.Policy);
     }
 
     [Test]
@@ -378,6 +445,8 @@ public class MailboxApplicationTests
             MarkReadCalls++;
             return Task.FromResult(references.Count);
         }
+        public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<AttachmentDescriptor>>([]);
+        public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken) => Task.FromResult(new OpenedAttachment(new AttachmentDescriptor(attachmentId, null, "application/octet-stream", 0, false, null), new MemoryStream()));
         public Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken) => Task.FromResult<Stream>(new MemoryStream());
     }
 
@@ -391,6 +460,8 @@ public class MailboxApplicationTests
             return Task.FromResult(Page);
         }
         public Task<MessageContent> ReadAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, BodyMode bodyMode, CancellationToken cancellationToken) => Task.FromResult(new MessageContent());
+        public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<AttachmentDescriptor>>([]);
+        public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken) => Task.FromResult(new OpenedAttachment(new AttachmentDescriptor(attachmentId, null, "application/octet-stream", 0, false, null), new MemoryStream()));
         public Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken) => Task.FromResult<Stream>(new MemoryStream());
     }
 }

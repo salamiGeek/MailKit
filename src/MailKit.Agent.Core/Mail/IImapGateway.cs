@@ -23,6 +23,15 @@ public interface IImapGateway
         IReadOnlyList<MessageReference> references, bool isRead,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(
+        AccountProfile profile, PasswordCredentialLease credential,
+        MessageReference reference, CancellationToken cancellationToken);
+
+    Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(
+        AccountProfile profile, PasswordCredentialLease credential,
+        MessageReference reference, string attachmentId,
+        CancellationToken cancellationToken);
+
     Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential,
         MessageReference reference, string attachmentId, CancellationToken cancellationToken);
 }

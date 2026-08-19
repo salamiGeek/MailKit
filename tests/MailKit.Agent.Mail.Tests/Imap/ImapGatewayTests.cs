@@ -324,6 +324,56 @@ public sealed class ImapGatewayTests
     }
 
     [Test]
+    public async Task ListAttachmentsFetchesBodyStructureWithoutBodyContent()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(
+            Examine("A00000005", ExpectedUidValidity, 1),
+            FetchAttachmentStructure("A00000006", 42));
+        var gateway = CreateGateway(session);
+
+        IReadOnlyList<AttachmentDescriptor> attachments = await gateway.ListAttachmentsAsync(
+            Profile, credential,
+            MessageReference.ForImap("account-one", "INBOX", ExpectedUidValidity, 42),
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(attachments, Has.Count.EqualTo(1));
+            Assert.That(attachments[0].Id, Is.EqualTo("part-2"));
+            Assert.That(attachments[0].FileName, Is.EqualTo("note.bin"));
+            Assert.That(attachments[0].ContentType, Is.EqualTo("application/octet-stream"));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
+    public async Task OpenAttachmentWithDescriptorFetchesOnlySelectedBodyPart()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(
+            Examine("A00000005", ExpectedUidValidity, 1),
+            FetchAttachmentStructure("A00000006", 42),
+            FetchAttachmentPart("A00000007", 42));
+        var gateway = CreateGateway(session);
+
+        OpenedAttachment opened = await gateway.OpenAttachmentWithDescriptorAsync(
+            Profile, credential,
+            MessageReference.ForImap("account-one", "INBOX", ExpectedUidValidity, 42),
+            "part-2", CancellationToken.None);
+        await using Stream content = opened.Content;
+        using var reader = new StreamReader(content, Encoding.ASCII);
+        string body = await reader.ReadToEndAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(opened.Descriptor.Id, Is.EqualTo("part-2"));
+            Assert.That(body, Is.EqualTo("ABC"));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
     public async Task AdvertisedMessageAttachmentCanBeOpenedAsMessageBytes()
     {
         using var source = new MemoryStream(Encoding.ASCII.GetBytes(AttachedMessageText));
@@ -476,6 +526,27 @@ public sealed class ImapGatewayTests
         return new($"{tag} UID FETCH {uid} ({item})\r\n",
             $"* 1 FETCH (UID {uid} BODY[] {{{Encoding.ASCII.GetByteCount(messageText)}}}\r\n" +
             messageText + $")\r\n{tag} OK FETCH completed\r\n");
+    }
+
+    private static ImapReplayCommand FetchAttachmentStructure(string tag, uint uid) =>
+        new($"{tag} UID FETCH {uid} (UID BODYSTRUCTURE)\r\n",
+            $"* 1 FETCH (UID {uid} BODYSTRUCTURE " +
+            "((\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 4 1) " +
+            "(\"APPLICATION\" \"OCTET-STREAM\" (\"NAME\" \"note.bin\") NIL NIL \"BASE64\" 4 NIL " +
+            "(\"ATTACHMENT\" (\"FILENAME\" \"note.bin\"))) \"MIXED\"))\r\n" +
+            $"{tag} OK FETCH completed\r\n");
+
+    private static ImapReplayCommand FetchAttachmentPart(string tag, uint uid)
+    {
+        const string headers =
+            "Content-Type: application/octet-stream; name=note.bin\r\n" +
+            "Content-Disposition: attachment; filename=note.bin\r\n" +
+            "Content-Transfer-Encoding: base64\r\n\r\n";
+        return new ImapReplayCommand(
+            $"{tag} UID FETCH {uid} (BODY.PEEK[2.MIME] BODY.PEEK[2])\r\n",
+            $"* 1 FETCH (UID {uid} BODY[2.MIME] {{{Encoding.ASCII.GetByteCount(headers)}}}\r\n" +
+            headers + " BODY[2] {4}\r\nQUJD)\r\n" +
+            $"{tag} OK FETCH completed\r\n");
     }
 
     private sealed class ReplaySession : IImapClientFactory, IDisposable
