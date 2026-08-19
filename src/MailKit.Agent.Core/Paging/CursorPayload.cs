@@ -6,4 +6,9 @@ public sealed record CursorPayload(
     [property: JsonPropertyName("account_id")] string AccountId,
     [property: JsonPropertyName("scope")] string Scope,
     [property: JsonPropertyName("position")] string Position,
-    [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);
+    [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt)
+{
+    [JsonPropertyName("page_size")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PageSize { get; init; }
+}
