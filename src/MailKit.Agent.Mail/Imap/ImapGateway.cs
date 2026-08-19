@@ -24,6 +24,7 @@ public sealed class ImapGateway : IImapGateway
     private readonly IImapClientFactory clientFactory;
     private readonly MimeContentService contentService;
     private readonly MimePartLocator partLocator;
+    private readonly ConnectionGate connectionGate;
     private readonly TimeSpan commandTimeout;
     private readonly int maxBodyCharacters;
 
@@ -37,11 +38,13 @@ public sealed class ImapGateway : IImapGateway
         MimeContentService? contentService = null,
         MimePartLocator? partLocator = null,
         TimeSpan? commandTimeout = null,
-        int maxBodyCharacters = 100_000)
+        int maxBodyCharacters = 100_000,
+        ConnectionGate? connectionGate = null)
     {
         this.clientFactory = clientFactory ?? throw new ArgumentNullException(nameof(clientFactory));
         this.contentService = contentService ?? new MimeContentService();
         this.partLocator = partLocator ?? new MimePartLocator();
+        this.connectionGate = connectionGate ?? new ConnectionGate();
         this.commandTimeout = commandTimeout ?? ConnectionLimits.Default.CommandTimeout;
         if (this.commandTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(commandTimeout));
@@ -532,6 +535,12 @@ public sealed class ImapGateway : IImapGateway
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(credential);
 
+        // The per-account/IMAP lease is held from just before connect until the
+        // disconnect/dispose cleanup completes; the gate queues callers instead of
+        // failing them.
+        IAsyncDisposable lease = await connectionGate
+            .AcquireAsync(profile.Id, "imap", cancellationToken)
+            .ConfigureAwait(false);
         ImapClient? client = null;
         try
         {
@@ -552,6 +561,7 @@ public sealed class ImapGateway : IImapGateway
         {
             if (client is not null)
                 await DisconnectAndDisposeAsync(client).ConfigureAwait(false);
+            await lease.DisposeAsync().ConfigureAwait(false);
         }
     }
 
