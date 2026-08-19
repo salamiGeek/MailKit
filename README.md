@@ -19,7 +19,7 @@ MailKit is a cross-platform mail client library built on top of [MimeKit](https:
 
 ### Agent plugin (experimental)
 
-The repository also contains an experimental [MailKit Agent plugin](docs/MailKit.Agent/getting-started.md) for Codex. Its foundation release is separate from the supported MailKit NuGet library and currently provides only local health checks and non-secret account-profile configuration; it does not yet connect to mailboxes, read or write messages, or send email.
+The repository also contains an experimental [MailKit Agent plugin](docs/MailKit.Agent/getting-started.md) for Codex. The plugin (0.2.0) is separate from the supported MailKit NuGet library and provides 17 MCP tools: non-secret account profiles with a local credential CLI, IMAP/POP3/SMTP connection tests, IMAP folder browsing, paginated listing and server-side search, message reads (POP3 via UIDL, without server-side read state), attachment listing and saving into an isolated download root, and confirmed SMTP sending through a two-stage `send_prepare`/`send_commit` flow with one-time confirmation tokens and an idempotent send ledger. Mailbox management operations (delete, move, archive, drafts) and OAuth login are not supported; see the [capability matrix](docs/MailKit.Agent/capability-matrix.md).
 
 ## Donate
 
