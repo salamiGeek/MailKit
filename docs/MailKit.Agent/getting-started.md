@@ -1,12 +1,12 @@
-# MailKit Agent foundation: getting started
+# MailKit Agent：上手指南
 
-MailKit Agent is an experimental Codex plugin in this repository. The foundation release runs a local .NET MCP server over stdio and supports health checks plus non-secret account-profile configuration. It does not yet connect to IMAP, POP3, or SMTP servers or access mailbox content. See the [capability matrix](capability-matrix.md) for the exact boundary.
+MailKit Agent 是本仓库中的实验性 Codex 插件。0.2.0 版本通过 stdio 运行本地 .NET MCP 服务器，提供 17 个 MCP 工具：非秘密账户配置、本地凭据 CLI、IMAP/POP3/SMTP 连接测试、IMAP 文件夹浏览、分页列表与服务器端搜索、邮件读取与已读标记、POP3 列表与读取、附件列表与保存，以及两阶段确认的 SMTP 发送。确切的能力边界请参阅[能力矩阵](capability-matrix.md)。
 
-This plugin is separate from the supported MailKit NuGet library. Applications that need the supported .NET mail-client API should continue to use the [`MailKit` NuGet package](https://www.nuget.org/packages/MailKit/).
+此插件与受支持的 MailKit NuGet 库相互独立。需要受支持的 .NET 邮件客户端 API 的应用程序应继续使用 [`MailKit` NuGet 包](https://www.nuget.org/packages/MailKit/)。
 
-## Build and publish locally
+## 在本地构建和发布
 
-From the repository root, run:
+在仓库根目录中运行：
 
 ```powershell
 git submodule update --init --recursive
@@ -17,18 +17,101 @@ codex plugin marketplace add .
 codex plugin marketplace list
 ```
 
-The publish command above targets Windows x64. It places the local MCP server and its runtime dependencies under `plugins/mailkit-agent/server` for the plugin package.
+上述发布命令以 Windows x64 为目标平台，并将本地 MCP 服务器及其运行时依赖项放入插件包的 `plugins/mailkit-agent/server` 目录。
 
-## Install and check the plugin
+## 安装并检查插件
 
-After adding the repository marketplace:
+添加仓库 marketplace 后：
 
-1. Restart the Codex desktop app.
-2. Install **MailKit Agent** from the **mailkit-agent-local** marketplace.
-3. In a new task, first invoke `diagnostics_health`.
+1. 重新启动 Codex 桌面应用。
+2. 从 **mailkit-agent-local** marketplace 安装 **MailKit Agent**。
+3. 新建一个任务，并首先调用 `diagnostics_health`。
 
-A healthy response identifies the MailKit Agent foundation server, reports stdio transport, and reports that no network listener is enabled. You can then use `account_list` to list profiles or `account_profile_put` to save a non-secret profile.
+健康响应会标识 MailKit Agent 服务器，报告其使用 stdio 传输，并确认未启用网络监听器。随后可以使用 `account_list` 列出账户，用 `account_profile_put` 保存配置，再用 `account_connection_test` 验证 IMAP、POP3 和 SMTP 连接。
 
-## Keep secrets out of chat
+## 配置账户（非秘密 JSON）
 
-Account profiles contain connection settings only; they contain no secrets. Passwords, app passwords, access tokens, refresh tokens, and client secrets must never be pasted into chat. Secret storage, OAuth, mailbox connections, reading, writing, and sending are not implemented in this foundation release.
+使用 `account_profile_put` 保存非秘密配置。配置只包含端点和身份验证类型，绝不包含任何秘密字段：
+
+```json
+{
+  "id": "personal",
+  "display_name": "个人邮箱",
+  "username": "user@example.com",
+  "authentication": "password",
+  "imap": { "host": "imap.example.com", "port": 993, "tls": "implicit_tls" },
+  "pop3": null,
+  "smtp": { "host": "smtp.example.com", "port": 587, "tls": "start_tls" }
+}
+```
+
+- `id` 由小写字母、数字、`_`、`-` 组成，长度 1 到 64，并且以小写字母或数字开头。
+- `authentication` 当前只支持 `password`；`o_auth2` 仅为将来的 OAuth 支持保留，目前没有 OAuth 登录流程。
+- 每个端点的 `tls` 只接受 `"implicit_tls"` 或 `"start_tls"`；`plain` 会被拒绝，MailKit Agent 不允许明文连接。
+- `imap`、`pop3`、`smtp` 至少配置一项；不使用的协议保持 `null`。
+
+## 配置凭据（本地 CLI，不要在聊天中输入秘密）
+
+密码只能通过插件自带的本地 CLI 写入操作系统凭据存储。三个命令都要求 `--account <id>`：
+
+```powershell
+mailkit-agent account credential set --account <account-id>
+mailkit-agent account credential status --account <account-id>
+mailkit-agent account credential delete --account <account-id>
+```
+
+- `set` 以不回显的方式提示输入密码；`status` 只报告凭据是否已配置；`delete` 只删除该账户的凭据。
+- 在 Windows 上，密码保存在 Windows 凭据管理器中，目标名称为 `MailKit.Agent/account/<account-id>/password`。MCP 工具从不接受、返回或回显密码值。
+- 在没有受支持凭据存储的平台上，这些命令返回稳定的错误，而不泄露环境细节。
+- 切勿在聊天中粘贴密码、应用专用密码、访问令牌、刷新令牌或客户端秘密。
+
+## 工具总览
+
+| 类别 | 工具 | 行为要点 |
+|---|---|---|
+| 诊断 | `diagnostics_health` | 报告服务器身份与 stdio 传输健康状态，不访问邮箱。 |
+| 账户 | `account_list` | 列出已配置的非秘密账户档案。 |
+| 账户 | `account_profile_put` | 新建或替换非秘密账户档案，绝不接受密码或令牌。 |
+| 账户 | `account_credential_status` | 只报告某个账户是否已配置凭据。 |
+| 账户 | `account_connection_test` | 用已存储的凭据测试 IMAP、POP3、SMTP 连接与身份验证。 |
+| 邮箱 | `folder_list` | 列出 IMAP 文件夹；文件夹名称是不可信数据。 |
+| 邮箱 | `message_list` | 按页列出文件夹中的 IMAP 邮件摘要，返回不透明 `next_cursor`。 |
+| 邮箱 | `message_search` | 在一个文件夹内执行服务器端 IMAP 搜索，同样分页。 |
+| 邮件 | `message_read` | 读取一封 IMAP 邮件，默认标记已读；`mark_as_read:false` 提供不变更状态的预览。 |
+| 邮件 | `message_mark_read` | 显式设置 IMAP 邮件的已读或未读状态。 |
+| 邮件 | `pop3_message_list` | 按页列出 POP3 邮件摘要，引用基于 UIDL。 |
+| 邮件 | `pop3_message_read` | 读取一封 POP3 邮件；`body_mode` 可选 `safe_text`（默认）或 `html`。 |
+| 附件 | `attachment_list` | 列出一封邮件的附件；附件文件名是不可信数据。 |
+| 附件 | `attachment_save` | 把一个附件保存到下载根目录并返回存储路径，绝不打开或执行该文件。 |
+| 发送 | `send_prepare` | 校验草稿并返回脱敏预览和一次性确认令牌，此时不连接 SMTP。 |
+| 发送 | `send_commit` | 仅凭一次性 `confirmation_token` 完成用户确认过的发送。 |
+| 发送 | `send_status` | 按账户和幂等键报告持久发送状态。 |
+
+`message_search` 的 `criteria` 支持服务器端条件：`text`、`from`、`to`、`subject`、`since`、`before`、`unread`。列表与搜索的 `page_size` 上限为 100，翻页时把上一页返回的 `next_cursor` 原样传回。
+
+## POP3 与 IMAP 的差异
+
+- POP3 没有服务器端已读状态：`pop3_message_read` 永远不会标记已读，也不存在未读筛选或 `message_mark_read` 的等价工具。
+- POP3 没有文件夹和搜索：没有对应的 `folder_list` 或 `message_search` 工具。
+- POP3 引用基于 UIDL：`pop3_message_list` 返回的引用使用 UIDL 标识邮件，服务器必须支持 UIDL 能力。
+
+## 附件与本地目录
+
+- `attachment_save` 只把附件写入隔离的下载根目录并返回存储路径；保存结果绝不由代理打开、执行或渲染。
+- 下载根目录默认是 `%LOCALAPPDATA%\MailKit.Agent\downloads`，可用环境变量 `MAILKIT_AGENT_DOWNLOAD_ROOT` 覆盖。
+- 发送附件只能来自 `MAILKIT_AGENT_UPLOAD_ROOTS` 配置的上传根目录（多个目录用路径分隔符分隔）；未配置时不允许附加本地文件，根目录之外的路径会被拒绝。
+
+## 发送与两阶段确认
+
+发送始终分两步完成：
+
+1. `send_prepare`：校验草稿（收件人、主题、正文、附件路径），返回脱敏预览（收件人、主题、正文前 200 个字符、附件文件名）和一次性 `confirmation_token`。此阶段不获取凭据，也不连接 SMTP。
+2. 用户查看完整预览并明确确认后，调用 `send_commit`，只提交 `confirmation_token`。确认令牌在 10 分钟后过期，且只能使用一次。
+
+- 每次发送绑定调用方选择的 `idempotency_key`（字符集 `A-Za-z0-9._-`，最长 128）：同一密钥不会投递第二封邮件。
+- `send_status` 报告持久状态：`prepared`、`attempting`、`succeeded`、`failed`、`indeterminate`。
+- 结果未知的发送（`indeterminate`，例如投递中途连接断开）不会自动重试：先查询 `send_status`，再由用户决定如何处理。
+
+## 尚未支持的能力
+
+当前版本不支持删除、移动、归档邮件，不支持草稿管理，也不支持 OAuth 登录（Gmail/Microsoft OAuth 仍为计划中）。MailKit Agent 也不提供执行任意 IMAP、POP3 或 SMTP 命令的工具。完整边界请参阅[能力矩阵](capability-matrix.md)。

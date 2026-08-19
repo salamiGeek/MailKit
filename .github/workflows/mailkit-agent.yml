@@ -3,20 +3,36 @@ name: MailKit Agent
 on:
   push:
     paths:
-      - 'src/MailKit.Agent.*/**'
-      - 'tests/MailKit.Agent.*/**'
+      - 'src/MailKit.Agent.Core/**'
+      - 'src/MailKit.Agent.Auth/**'
+      - 'src/MailKit.Agent.Mail/**'
+      - 'src/MailKit.Agent.Mcp/**'
+      - 'tests/MailKit.Agent.Core.Tests/**'
+      - 'tests/MailKit.Agent.Auth.Tests/**'
+      - 'tests/MailKit.Agent.Mail.Tests/**'
+      - 'tests/MailKit.Agent.Mcp.Tests/**'
       - 'plugins/mailkit-agent/**'
       - '.agents/plugins/**'
+      - 'docs/MailKit.Agent/**'
       - 'scripts/Publish-MailKitAgentPlugin.ps1'
       - 'MailKit.Agent.sln'
+      - '.github/workflows/mailkit-agent.yml'
   pull_request:
     paths:
-      - 'src/MailKit.Agent.*/**'
-      - 'tests/MailKit.Agent.*/**'
+      - 'src/MailKit.Agent.Core/**'
+      - 'src/MailKit.Agent.Auth/**'
+      - 'src/MailKit.Agent.Mail/**'
+      - 'src/MailKit.Agent.Mcp/**'
+      - 'tests/MailKit.Agent.Core.Tests/**'
+      - 'tests/MailKit.Agent.Auth.Tests/**'
+      - 'tests/MailKit.Agent.Mail.Tests/**'
+      - 'tests/MailKit.Agent.Mcp.Tests/**'
       - 'plugins/mailkit-agent/**'
       - '.agents/plugins/**'
+      - 'docs/MailKit.Agent/**'
       - 'scripts/Publish-MailKitAgentPlugin.ps1'
       - 'MailKit.Agent.sln'
+      - '.github/workflows/mailkit-agent.yml'
 
 jobs:
   test:
