@@ -5,8 +5,8 @@
 | 领域 | 能力 | MCP 工具 | MailKit API | 协议前置条件 | 风险 | 自动化测试 | 状态 |
 |---|---|---|---|---|---|---|---|
 | 诊断 | 健康检查 | `diagnostics_health` | 无 | 无 | 只读 | `ToolSchemaTests.FoundationToolsReturnStructuredContentAndInvalidPutIsSanitized`; `FoundationServerTests.FoundationToolsRunOverStdioWithIsolatedAccountStorage` | 已支持 |
-| 账户 | 列出非秘密配置 | `account_list` | 无 | 无 | 只读 | `ToolSchemaTests.FoundationToolsAdvertiseSafeStructuredSchemas`; `FoundationServerTests.FoundationToolsRunOverStdioWithIsolatedAccountStorage` | 已支持 |
-| 账户 | 保存非秘密配置 | `account_profile_put` | 无 | 无 | 可恢复写入 | `ToolSchemaTests.FoundationToolsAdvertiseSafeStructuredSchemas`; `JsonAccountProfileStoreTests.PutRejectsPlainTlsBeforeCreatingStorageArtifacts` | 已支持 |
+| 账户 | 列出非秘密配置 | `account_list` | 无 | 无 | 只读 | `ToolSchemaTests.AllToolsAdvertiseSafeStructuredSchemas`; `FoundationServerTests.FoundationToolsRunOverStdioWithIsolatedAccountStorage` | 已支持 |
+| 账户 | 保存非秘密配置 | `account_profile_put` | 无 | 无 | 可恢复写入 | `ToolSchemaTests.AllToolsAdvertiseSafeStructuredSchemas`; `JsonAccountProfileStoreTests.PutRejectsPlainTlsBeforeCreatingStorageArtifacts` | 已支持 |
 | 账户 | 凭据状态查询 | `account_credential_status` | 无 | 已存储凭据 | 只读 | `ConnectionToolsTests.CredentialStatusReportsConfiguredKindWithoutSecretValues`; `CredentialCommandTests.StatusReportsOnlyWhetherCredentialExists` | 已支持 |
 | 账户 | 本地凭据 CLI | 无（CLI：`account credential set/status/delete`） | Windows 凭据管理器 | 已保存账户档案 | 可恢复写入 | `CredentialCommandTests.SetReadsSecretLocallyAndUsesTheProfilesUsername`; `WindowsCredentialVaultTests.RoundTripsAndDeletesOnlyTheNamedCredential` | 已支持 |
 | 连接 | IMAP 连接 | `account_connection_test`（protocols 含 `imap`） | `ImapClient` | IMAP 服务器、TLS、已存储凭据 | 只读 | `ConnectionToolsTests.TestForwardsAccountAndProtocolSubsetExactly`; `ProtocolConnectionTesterTests.TestReportsConnectionStateAndCapabilitiesThenCleansUp` | 已支持 |
