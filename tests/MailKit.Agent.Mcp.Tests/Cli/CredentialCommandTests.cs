@@ -168,6 +168,32 @@ public class CredentialCommandTests
 	}
 
 	[Test]
+	public async Task OversizedSecretReturnsStableErrorInsteadOfCrashing()
+	{
+		// WindowsCredentialVault.SetPasswordAsync rejects oversized blobs with
+		// ArgumentException; the interactive path must stay a sanitized CLI error.
+		var fakeVault = new FakeCredentialVault { RejectOversizedSecret = true };
+		var fakeConsole = new FakeSecretConsole("over-sized-secret");
+		var command = new CredentialCommand(
+			new FakeProfileStore(CreateProfile("personal")),
+			fakeVault,
+			fakeConsole);
+
+		var exitCode = await command.RunAsync(
+			["account", "credential", "set", "--account", "personal"],
+			CancellationToken.None);
+
+		Assert.Multiple(() =>
+		{
+			Assert.That(exitCode, Is.EqualTo(1));
+			Assert.That(fakeConsole.Output, Does.Contain("exceeds the credential storage limit"));
+			Assert.That(fakeConsole.Output, Does.Not.Contain("over-sized-secret"));
+			Assert.That(fakeConsole.Output, Does.Not.Contain(nameof(ArgumentException)));
+			Assert.That(fakeConsole.Output, Does.Not.Contain("Void "));
+		});
+	}
+
+	[Test]
 	public async Task CancelledSecretInputReturnsConventionalExitCode()
 	{
 		var fakeConsole = new FakeSecretConsole { CancelRead = true };
@@ -242,6 +268,7 @@ public class CredentialCommandTests
 	{
 		public bool Configured { get; set; }
 		public bool PlatformUnsupported { get; set; }
+		public bool RejectOversizedSecret { get; set; }
 		public string? LastAccountId { get; private set; }
 		public string? LastUsername { get; private set; }
 
@@ -270,6 +297,9 @@ public class CredentialCommandTests
 			ThrowIfUnsupported();
 			LastAccountId = accountId;
 			LastUsername = username;
+			if (RejectOversizedSecret)
+				throw new ArgumentException(
+					"Password exceeds the credential storage limit.", nameof(password));
 			Configured = true;
 			return ValueTask.CompletedTask;
 		}
