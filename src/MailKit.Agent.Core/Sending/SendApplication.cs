@@ -155,7 +155,7 @@ public sealed class SendApplication
             }
 
             ComposedOutgoingMessage composed = await composer.ComposeAsync(
-                profile, draft!, cancellationToken).ConfigureAwait(false);
+                profile, draft!, idempotencyKey, cancellationToken).ConfigureAwait(false);
             string contentHash = ComputeContentHash(composed.MessageId, draft!);
 
             DateTimeOffset now = timeProvider.GetUtcNow();

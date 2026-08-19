@@ -44,6 +44,8 @@ public class SendApplicationTests
             Assert.That(preview.IdempotencyKeyHash, Does.Match("^[0-9a-f]{64}$"));
             Assert.That(preview.ConfirmationToken, Is.Not.Null.And.Not.Empty);
             Assert.That(fixture.Composer.Calls, Is.EqualTo(1));
+            Assert.That(fixture.Composer.LastIdempotencyKey, Is.EqualTo("idem-001"),
+                "The composer must receive the raw idempotency key to derive the Message-Id.");
             Assert.That(fixture.Smtp.SendCount, Is.Zero);
             Assert.That(fixture.Vault.StatusCalls, Is.Zero);
             Assert.That(fixture.Vault.PasswordCalls, Is.Zero);
@@ -687,12 +689,17 @@ public class SendApplicationTests
         public const string MessageId = "<message-1@example.com>";
         public byte[] Mime { get; } = "MIME without Bcc headers"u8.ToArray();
         public int Calls { get; private set; }
+        public string? LastIdempotencyKey { get; private set; }
+        public AccountProfile? LastProfile { get; private set; }
         public Exception? Exception { get; set; }
 
         public Task<ComposedOutgoingMessage> ComposeAsync(
-            AccountProfile profile, OutgoingMessageDraft draft, CancellationToken cancellationToken)
+            AccountProfile profile, OutgoingMessageDraft draft, string idempotencyKey,
+            CancellationToken cancellationToken)
         {
             Calls++;
+            LastProfile = profile;
+            LastIdempotencyKey = idempotencyKey;
             if (Exception is not null)
                 return Task.FromException<ComposedOutgoingMessage>(Exception);
             return Task.FromResult(new ComposedOutgoingMessage(Mime, MessageId));
