@@ -67,7 +67,8 @@ public sealed class MailServiceConnector
         }
         catch (Exception exception)
         {
-            await CleanupFailedServiceAsync(service).ConfigureAwait(false);
+            await CleanupFailedServiceAsync(
+                service, _limits.CommandTimeout, callerCancellationToken).ConfigureAwait(false);
             throw ProtocolExceptionMapper.Map(
                 exception, normalizedProtocol, operation, callerCancellationToken);
         }
@@ -108,11 +109,17 @@ public sealed class MailServiceConnector
             null));
     }
 
-    private static async Task CleanupFailedServiceAsync(IMailService service)
+    private static async Task CleanupFailedServiceAsync(
+        IMailService service,
+        TimeSpan timeout,
+        CancellationToken callerCancellationToken)
     {
         try
         {
-            await service.DisconnectAsync(false, CancellationToken.None).ConfigureAwait(false);
+            using var cleanupScope = CommandTimeoutScope.Create(
+                timeout, callerCancellationToken);
+            Task disconnect = service.DisconnectAsync(false, cleanupScope.Token);
+            await disconnect.WaitAsync(cleanupScope.Token).ConfigureAwait(false);
         }
         catch
         {
