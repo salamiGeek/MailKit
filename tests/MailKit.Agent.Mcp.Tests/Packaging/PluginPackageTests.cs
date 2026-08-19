@@ -258,6 +258,19 @@ public class PluginPackageTests
 	}
 
 	[Test]
+	public void UserDocsDiscloseAsciiOnlySendRecipientsAndPop3PaginationLimits()
+	{
+		Assert.Multiple(() =>
+		{
+			Assert.That(GettingStartedText, Does.Contain("收件地址仅支持 ASCII（显示名支持 Unicode）"));
+			Assert.That(GettingStartedText, Does.Contain("SMTPUTF8 服务器能力协商已实现"));
+			Assert.That(CapabilityMatrixText, Does.Contain("收件地址仅支持 ASCII（显示名支持 Unicode）"));
+			Assert.That(CapabilityMatrixText, Does.Contain("SMTPUTF8 服务器能力协商已实现"));
+			Assert.That(GettingStartedText, Does.Contain("基于序号的分页可能跳过一封现存邮件"));
+		});
+	}
+
+	[Test]
 	public void GettingStartedDocumentsCredentialCliAndProfileContract()
 	{
 		var guide = GettingStartedText;
