@@ -97,6 +97,7 @@ public sealed class CredentialCommand
 		AccountProfile profile,
 		CancellationToken cancellationToken)
 	{
+		_ = await _vault.GetStatusAsync(profile.Id, cancellationToken);
 		using var secret = await _console.ReadSecretAsync("Credential: ", cancellationToken);
 		await _vault.SetPasswordAsync(
 			profile.Id,

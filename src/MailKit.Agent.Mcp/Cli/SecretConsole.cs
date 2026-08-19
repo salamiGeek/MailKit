@@ -5,28 +5,44 @@ namespace MailKit.Agent.Mcp.Cli;
 
 public sealed class SecretConsole : ISecretConsole
 {
-	public ValueTask<SecretBuffer> ReadSecretAsync(
+	private static readonly TimeSpan KeyPollInterval = TimeSpan.FromMilliseconds(25);
+	private readonly ISecretConsoleInput _input;
+
+	public SecretConsole()
+		: this(new SystemSecretConsoleInput())
+	{
+	}
+
+	internal SecretConsole(ISecretConsoleInput input)
+	{
+		_input = input ?? throw new ArgumentNullException(nameof(input));
+	}
+
+	public async ValueTask<SecretBuffer> ReadSecretAsync(
 		string prompt,
 		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(prompt);
 		cancellationToken.ThrowIfCancellationRequested();
-		Console.Write(prompt);
+		_input.Write(prompt);
 
 		var characters = new char[128];
 		var length = 0;
-		var previousTreatControlCAsInput = Console.TreatControlCAsInput;
+		var previousTreatControlCAsInput = _input.TreatControlCAsInput;
 		try
 		{
-			Console.TreatControlCAsInput = true;
+			_input.TreatControlCAsInput = true;
 			while (true)
 			{
+				while (!_input.KeyAvailable)
+					await Task.Delay(KeyPollInterval, cancellationToken);
+
 				cancellationToken.ThrowIfCancellationRequested();
-				var key = Console.ReadKey(intercept: true);
+				var key = _input.ReadKey(intercept: true);
 				if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
 					throw new OperationCanceledException(cancellationToken);
 				if (key.Key == ConsoleKey.Enter)
-					return ValueTask.FromResult(new SecretBuffer(characters.AsSpan(0, length)));
+					return new SecretBuffer(characters.AsSpan(0, length));
 				if (key.Key == ConsoleKey.Backspace)
 				{
 					if (length > 0)
@@ -49,10 +65,40 @@ public sealed class SecretConsole : ISecretConsole
 		finally
 		{
 			CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(characters.AsSpan()));
-			Console.TreatControlCAsInput = previousTreatControlCAsInput;
-			Console.WriteLine();
+			_input.TreatControlCAsInput = previousTreatControlCAsInput;
+			_input.WriteLine();
 		}
 	}
 
 	public void WriteLine(string value) => Console.WriteLine(value);
+}
+
+internal interface ISecretConsoleInput
+{
+	bool KeyAvailable { get; }
+
+	bool TreatControlCAsInput { get; set; }
+
+	ConsoleKeyInfo ReadKey(bool intercept);
+
+	void Write(string value);
+
+	void WriteLine();
+}
+
+internal sealed class SystemSecretConsoleInput : ISecretConsoleInput
+{
+	public bool KeyAvailable => Console.KeyAvailable;
+
+	public bool TreatControlCAsInput
+	{
+		get => Console.TreatControlCAsInput;
+		set => Console.TreatControlCAsInput = value;
+	}
+
+	public ConsoleKeyInfo ReadKey(bool intercept) => Console.ReadKey(intercept);
+
+	public void Write(string value) => Console.Write(value);
+
+	public void WriteLine() => Console.WriteLine();
 }

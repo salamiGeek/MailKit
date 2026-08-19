@@ -20,4 +20,8 @@
     <ProjectReference Include="..\MailKit.Agent.Mail\MailKit.Agent.Mail.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="MailKit.Agent.Mcp.Tests" />
+  </ItemGroup>
+
 </Project>
