@@ -1,7 +1,7 @@
 {
   "mailkit-agent": {
     "command": "dotnet",
-    "args": ["server/MailKit.Agent.Mcp.dll"],
+    "args": ["server/mailkit-agent.dll"],
     "cwd": "."
   }
 }
