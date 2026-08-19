@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Credentials;
@@ -159,6 +160,64 @@ public class SendToolsTests
             Assert.That(status.Data!.State, Is.EqualTo(SendState.Succeeded));
             Assert.That(status.Data.MessageId, Is.EqualTo("fixture-message-id@example.test"));
         });
+    }
+
+    [Test]
+    public async Task ConfirmationTokenPayloadCarriesSessionIdWithoutSecretShapedFields()
+    {
+        var harness = CreateHarness();
+        var identity = new StdioSessionIdentity();
+        var prepared = await SendTools.PrepareAsync(
+            PrepareRequest(), server: null, identity, harness.Application, CancellationToken.None);
+        Assert.That(prepared.Ok, Is.True);
+
+        string payloadJson = DecodeConfirmationTokenPayload(prepared.Data!.ConfirmationToken);
+        using var payload = JsonDocument.Parse(payloadJson);
+
+        Assert.Multiple(() =>
+        {
+            // The stdio session identity IS client-visible inside the signed payload;
+            // that is the documented invariant, so assert it explicitly rather than
+            // assume secrecy.
+            Assert.That(
+                payload.RootElement.GetProperty("session_id").GetString(),
+                Is.EqualTo(identity.Id));
+            Assert.That(
+                payload.RootElement.EnumerateObject().Select(property => property.Name),
+                Has.None.Match(
+                    "password|passwd|token|secret|credential_value|authorization"));
+            Assert.That(payloadJson, Does.Not.Contain("fixture-password"));
+            Assert.That(payloadJson, Does.Not.Contain("Fixture body"));
+        });
+        // The capability boundary stays closed: a token issued to this session is
+        // useless to another one (also covered by CommitRejectsTokensIssuedToAnotherSession).
+        var stolen = await SendTools.CommitAsync(
+            new SendCommitRequest(prepared.Data.ConfirmationToken),
+            server: null,
+            new StdioSessionIdentity(),
+            harness.Application,
+            CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(stolen.Ok, Is.False);
+            Assert.That(stolen.Error!.Code, Is.EqualTo("send.session_mismatch"));
+            Assert.That(harness.Smtp.SendCount, Is.Zero);
+        });
+    }
+
+    private static string DecodeConfirmationTokenPayload(string token)
+    {
+        string[] parts = token.Split('.');
+        Assert.That(parts.Length, Is.EqualTo(2), "Token must be payload.signature.");
+        string base64 = parts[0].Replace('-', '+').Replace('_', '/');
+        base64 = (base64.Length % 4) switch
+        {
+            0 => base64,
+            2 => base64 + "==",
+            3 => base64 + "=",
+            _ => throw new FormatException("Invalid base64url length.")
+        };
+        return Encoding.UTF8.GetString(Convert.FromBase64String(base64));
     }
 
     private static SendPrepareRequest PrepareRequest() => new(
