@@ -132,15 +132,62 @@ foreach ($item in Get-ChildItem -LiteralPath $canonicalServerPath -Force) {
 
 Push-Location -LiteralPath $canonicalRepoRoot
 try {
+    # The Agent graph project-references the upstream MailKit/MimeKit repositories,
+    # whose TargetFrameworks include net10.0. The plugin publishes only the Agent's
+    # net8.0 target, so the net8.0 overrides below keep the publish buildable on an
+    # 8.0.x-only SDK (NETSDK1045) without changing what is published.
     & dotnet publish src/MailKit.Agent.Mcp/MailKit.Agent.Mcp.csproj `
         --configuration Release `
         --framework net8.0 `
         --runtime $Runtime `
         --self-contained false `
-        --output $outputRelativePath
+        --output $outputRelativePath `
+        -p:TargetFramework=net8.0 `
+        -p:TargetFrameworks=net8.0
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet publish failed with exit code $LASTEXITCODE."
     }
 } finally {
     Pop-Location
 }
+
+# Post-publish verification: the framework-dependent server output must contain the
+# Agent assemblies plus the upstream MailKit/MimeKit dependencies and the platform
+# apphost, and the plugin root must keep declaring 'dotnet server/mailkit-agent.dll'.
+$requiredServerFiles = @(
+    'MailKit.Agent.Auth.dll',
+    'MailKit.Agent.Mail.dll',
+    'MailKit.Agent.Core.dll',
+    'MailKit.dll',
+    'MimeKit.dll',
+    'mailkit-agent.dll',
+    'mailkit-agent.runtimeconfig.json'
+)
+if ($Runtime -eq 'win-x64') {
+    $requiredServerFiles += 'mailkit-agent.exe'
+}
+
+$missingServerFiles = @(
+    $requiredServerFiles |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $outputPath $_) -PathType Leaf) }
+)
+if ($missingServerFiles.Count -gt 0) {
+    throw "Published server output is missing required files: $($missingServerFiles -join ', ')"
+}
+
+$mcpDeclarationPath = Join-Path $canonicalPluginRoot '.mcp.json'
+if (-not (Test-Path -LiteralPath $mcpDeclarationPath -PathType Leaf)) {
+    throw "The plugin root is missing the .mcp.json server declaration."
+}
+
+$mcpDeclaration = Get-Content -LiteralPath $mcpDeclarationPath -Raw | ConvertFrom-Json
+$serverDeclaration = $mcpDeclaration.'mailkit-agent'
+$declaredArguments = @($serverDeclaration.args)
+if ($null -eq $serverDeclaration -or
+    $serverDeclaration.command -ne 'dotnet' -or
+    $declaredArguments.Count -ne 1 -or
+    $declaredArguments[0] -ne 'server/mailkit-agent.dll') {
+    throw "The plugin .mcp.json must launch 'dotnet server/mailkit-agent.dll' from the plugin root."
+}
+
+Write-Host "Published and verified the plugin server output at $outputRelativePath."

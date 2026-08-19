@@ -331,6 +331,71 @@ public class PluginPackageTests
 		Assert.That(json, Does.Not.Contain("[TODO:"));
 	}
 
+	// Assemblies the publish script must self-verify after every publish and that a
+	// generated plugins/mailkit-agent/server output must contain.
+	private static readonly string[] RequiredServerAssemblies =
+	{
+		"MailKit.Agent.Auth.dll",
+		"MailKit.Agent.Mail.dll",
+		"MailKit.Agent.Core.dll",
+		"MailKit.dll",
+		"MimeKit.dll",
+		"mailkit-agent.dll"
+	};
+
+	private static string PublishScriptText =>
+		File.ReadAllText(Path.Combine(RepositoryRoot, "scripts", "Publish-MailKitAgentPlugin.ps1"));
+
+	[Test]
+	public void PublishScriptSelfVerifiesRequiredServerAssembliesAfterPublish()
+	{
+		var script = PublishScriptText;
+
+		Assert.Multiple(() =>
+		{
+			foreach (string assembly in RequiredServerAssemblies)
+			{
+				Assert.That(
+					script,
+					Does.Contain("'" + assembly + "'"),
+					$"The publish script must verify {assembly} after publishing.");
+			}
+
+			Assert.That(script, Does.Contain("mailkit-agent.exe"), "The script must verify the Windows apphost.");
+			Assert.That(script, Does.Contain(".mcp.json"), "The script must verify the MCP declaration.");
+			Assert.That(script, Does.Contain("server/mailkit-agent.dll"));
+			Assert.That(script, Does.Contain("dotnet"));
+		});
+	}
+
+	[Test]
+	public void PublishedServerOutputContainsRequiredAssembliesAndApphost()
+	{
+		string serverDirectory = Path.Combine(PluginRoot, "server");
+		if (!File.Exists(Path.Combine(serverDirectory, "mailkit-agent.dll")))
+		{
+			Assert.Ignore(
+				"Generate plugins/mailkit-agent/server first with "
+				+ "./scripts/Publish-MailKitAgentPlugin.ps1 -Runtime win-x64.");
+		}
+
+		foreach (string assembly in RequiredServerAssemblies)
+		{
+			Assert.That(
+				File.Exists(Path.Combine(serverDirectory, assembly)),
+				Is.True,
+				$"{assembly} is missing from the published server output.");
+		}
+
+		if (OperatingSystem.IsWindows())
+		{
+			Assert.That(
+				File.Exists(Path.Combine(serverDirectory, "mailkit-agent.exe")),
+				Is.True,
+				"The Windows apphost mailkit-agent.exe is missing from the published output.");
+		}
+	}
+
 	[Test]
 	public async Task PublishRejectsJunctionServerBeforeDeletingTargetContents()
 	{
