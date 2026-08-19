@@ -7,6 +7,7 @@ using MailKit.Agent.Mail.Mime;
 using MailKit.Net.Imap;
 using MailKit.Search;
 using MimeKit;
+using MimeKit.Utils;
 
 namespace MailKit.Agent.Mail.Imap;
 
@@ -268,6 +269,14 @@ public sealed class ImapGateway : IImapGateway
             if (selected is null)
                 throw AttachmentNotFound();
 
+            if (selected.Part.PartSpecifier.Length == 0)
+            {
+                Stream content = await GetTopLevelBodyContentAsync(
+                    folder, uid, selected.Part, cancellationToken)
+                    .ConfigureAwait(false);
+                return new OpenedAttachment(selected.Descriptor, content);
+            }
+
             MimeEntity entity;
             using (var scope = CreateScope(cancellationToken))
             {
@@ -281,6 +290,45 @@ public sealed class ImapGateway : IImapGateway
                 return new OpenedAttachment(selected.Descriptor, content);
             }
         }, cancellationToken);
+    }
+
+    private async Task<Stream> GetTopLevelBodyContentAsync(
+        IMailFolder folder,
+        UniqueId uid,
+        BodyPartBasic part,
+        CancellationToken cancellationToken)
+    {
+        Stream encoded;
+        using (var scope = CreateScope(cancellationToken))
+        {
+            encoded = await folder.GetStreamAsync(uid, "TEXT", scope.Token)
+                .ConfigureAwait(false);
+        }
+
+        await using (encoded)
+        {
+            ContentEncoding encoding;
+            if (string.IsNullOrEmpty(part.ContentTransferEncoding) ||
+                !MimeUtils.TryParse(part.ContentTransferEncoding, out encoding))
+            {
+                encoding = ContentEncoding.Default;
+            }
+
+            var output = new MemoryStream();
+            try
+            {
+                using var content = new MimeContent(encoded, encoding);
+                using var scope = CreateScope(cancellationToken);
+                await content.DecodeToAsync(output, scope.Token).ConfigureAwait(false);
+                output.Position = 0;
+                return output;
+            }
+            catch
+            {
+                output.Dispose();
+                throw;
+            }
+        }
     }
 
     public Task<Stream> OpenAttachmentAsync(
