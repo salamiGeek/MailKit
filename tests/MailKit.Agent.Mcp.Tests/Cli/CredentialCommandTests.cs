@@ -76,6 +76,28 @@ public class CredentialCommandTests
 		});
 	}
 
+	[Test]
+	public async Task UnsupportedPlatformRejectsSetBeforeReadingSecret()
+	{
+		var fakeConsole = new FakeSecretConsole("secret-value");
+		var command = new CredentialCommand(
+			new FakeProfileStore(CreateProfile("personal")),
+			new UnsupportedCredentialVault(),
+			fakeConsole);
+
+		var exitCode = await command.RunAsync(
+			["account", "credential", "set", "--account", "personal"],
+			CancellationToken.None);
+
+		Assert.Multiple(() =>
+		{
+			Assert.That(exitCode, Is.EqualTo(1));
+			Assert.That(fakeConsole.ReadCount, Is.Zero);
+			Assert.That(fakeConsole.Output, Does.Contain("credential.platform_unsupported"));
+			Assert.That(fakeConsole.Output, Does.Not.Contain("secret-value"));
+		});
+	}
+
 	[TestCase(true, "Credential is configured.")]
 	[TestCase(false, "Credential is not configured.")]
 	public async Task StatusReportsOnlyWhetherCredentialExists(bool configured, string expected)
