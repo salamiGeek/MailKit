@@ -312,6 +312,35 @@ public sealed class OutgoingMessageComposerTests
     }
 
     [Test]
+    public async Task BccOnlyDraftComposesWithoutExposedBccHeader()
+    {
+        // A Bcc-only draft is deliverable through the SMTP envelope (SendApplication
+        // counts Bcc as recipients), so composition must accept it; the serialized
+        // MIME still never carries the blind-copy recipient.
+        OutgoingMessageDraft draft = Draft(textBody: "Numbers attached.") with
+        {
+            To = [],
+            Cc = []
+        };
+
+        ComposedOutgoingMessage composed = await composer.ComposeAsync(
+            Profile(), draft, "idem-020", CancellationToken.None);
+
+        MimeMessage parsed = Parse(composed);
+        string raw = Encoding.UTF8.GetString(composed.MimeMessage);
+        Assert.Multiple(() =>
+        {
+            Assert.That(parsed.To, Is.Empty);
+            Assert.That(parsed.Cc, Is.Empty);
+            Assert.That(parsed.Bcc, Is.Empty);
+            Assert.That(BccHeaderPattern.IsMatch(raw), Is.False,
+                "The serialized MIME must not contain a Bcc header.");
+            Assert.That(raw, Does.Not.Contain("hidden@example.test"),
+                "The blind-copy recipient must never leak into the DATA payload.");
+        });
+    }
+
+    [Test]
     public void MissingBodyIsRejected()
     {
         MailOperationException exception = Assert.ThrowsAsync<MailOperationException>(async () =>
