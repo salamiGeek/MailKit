@@ -332,6 +332,54 @@ public sealed class Pop3GatewayTests
     }
 
     [Test]
+    public async Task ListAttachmentsUsesOneRetrAndReturnsDescriptorsOnly()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(Conversation(
+            count: 1,
+            new("UIDL\r\n", Uidl("uidl-attachment")),
+            new("RETR 1\r\n", Message(AttachmentMessageText))));
+        var gateway = CreateGateway(session);
+
+        IReadOnlyList<AttachmentDescriptor> attachments = await gateway.ListAttachmentsAsync(
+            Profile, credential, MessageReference.ForPop3("personal", "uidl-attachment"),
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(attachments, Has.Count.EqualTo(1));
+            Assert.That(attachments[0].Id, Is.EqualTo("part-2"));
+            Assert.That(attachments[0].FileName, Is.EqualTo("note.bin"));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
+    public async Task OpenAttachmentWithDescriptorUsesOneRetr()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(Conversation(
+            count: 1,
+            new("UIDL\r\n", Uidl("uidl-attachment")),
+            new("RETR 1\r\n", Message(AttachmentMessageText))));
+        var gateway = CreateGateway(session);
+
+        OpenedAttachment opened = await gateway.OpenAttachmentWithDescriptorAsync(
+            Profile, credential, MessageReference.ForPop3("personal", "uidl-attachment"),
+            "part-2", CancellationToken.None);
+        await using Stream content = opened.Content;
+        using var reader = new StreamReader(content, Encoding.ASCII);
+        string body = await reader.ReadToEndAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(opened.Descriptor.Id, Is.EqualTo("part-2"));
+            Assert.That(body, Is.EqualTo("ABC"));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
     public void GatewayContractExposesOnlyPop3StableRetrievalOperations()
     {
         string[] methods = typeof(IPop3Gateway).GetMethods()
@@ -341,8 +389,10 @@ public sealed class Pop3GatewayTests
 
         Assert.That(methods, Is.EqualTo(new[]
         {
+            "ListAttachmentsAsync",
             "ListMessagesAsync",
             "OpenAttachmentAsync",
+            "OpenAttachmentWithDescriptorAsync",
             "ReadAsync"
         }));
     }

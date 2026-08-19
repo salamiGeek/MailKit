@@ -40,12 +40,11 @@ public sealed class AttachmentApplication
             "attachment_list",
             RiskLevel.ReadOnly,
             1,
-            async (profile, credential) =>
-            {
-                MessageContent content = await ReadStructureAsync(
-                    profile, credential, reference, cancellationToken).ConfigureAwait(false);
-                return content.Attachments;
-            },
+            (profile, credential) => reference.Protocol == MailProtocol.Imap
+                ? imapGateway.ListAttachmentsAsync(
+                    profile, credential, reference, cancellationToken)
+                : pop3Gateway.ListAttachmentsAsync(
+                    profile, credential, reference, cancellationToken),
             cancellationToken,
             attachments => Math.Max(1, attachments.Count));
     }
@@ -72,37 +71,26 @@ public sealed class AttachmentApplication
             1,
             async (profile, credential) =>
             {
-                MessageContent content = await ReadStructureAsync(
-                    profile, credential, reference, cancellationToken).ConfigureAwait(false);
-                AttachmentDescriptor? descriptor = content.Attachments.FirstOrDefault(
-                    item => string.Equals(item.Id, attachmentId, StringComparison.Ordinal));
-                if (descriptor is null)
-                    throw new MailOperationException(AttachmentNotFound());
-
-                await using Stream source = reference.Protocol == MailProtocol.Imap
-                    ? await imapGateway.OpenAttachmentAsync(
+                OpenedAttachment opened = reference.Protocol == MailProtocol.Imap
+                    ? await imapGateway.OpenAttachmentWithDescriptorAsync(
                         profile, credential, reference, attachmentId, cancellationToken)
                         .ConfigureAwait(false)
-                    : await pop3Gateway.OpenAttachmentAsync(
+                    : await pop3Gateway.OpenAttachmentWithDescriptorAsync(
                         profile, credential, reference, attachmentId, cancellationToken)
                         .ConfigureAwait(false);
+                if (!string.Equals(opened.Descriptor.Id, attachmentId, StringComparison.Ordinal))
+                {
+                    await opened.Content.DisposeAsync().ConfigureAwait(false);
+                    throw new MailOperationException(AttachmentNotFound());
+                }
+
+                await using Stream source = opened.Content;
                 return await writer.SaveAsync(
-                    source, descriptor, destinationName, cancellationToken).ConfigureAwait(false);
+                    source, opened.Descriptor, destinationName, cancellationToken)
+                    .ConfigureAwait(false);
             },
             cancellationToken);
     }
-
-    private Task<MessageContent> ReadStructureAsync(
-        AccountProfile profile,
-        PasswordCredentialLease credential,
-        MessageReference reference,
-        CancellationToken cancellationToken) =>
-        reference.Protocol == MailProtocol.Imap
-            ? imapGateway.ReadAsync(
-                profile, credential, reference, markAsRead: false,
-                BodyMode.SafeText, cancellationToken)
-            : pop3Gateway.ReadAsync(
-                profile, credential, reference, BodyMode.SafeText, cancellationToken);
 
     private static bool TryGetProtocol(MessageReference? reference, out string? protocol)
     {

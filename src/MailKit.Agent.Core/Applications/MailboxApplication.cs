@@ -56,8 +56,12 @@ public sealed class MailboxApplication
         string folderId,
         int pageSize,
         string? cursor,
-        CancellationToken cancellationToken) =>
-        ListPageAsync(
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(folderId))
+            return Task.FromResult(InvalidFolderResult());
+
+        return ListPageAsync(
             accountId,
             RequireFolderScope("imap:list", folderId),
             "imap",
@@ -67,6 +71,7 @@ public sealed class MailboxApplication
             (profile, credential, offset) => imapGateway.ListMessagesAsync(
                 profile, credential, folderId, offset, pageSize, cancellationToken),
             cancellationToken);
+    }
 
     public Task<ToolResult<MessagePage>> SearchImapAsync(
         string accountId,
@@ -76,7 +81,16 @@ public sealed class MailboxApplication
         string? cursor,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(criteria);
+        if (string.IsNullOrWhiteSpace(folderId))
+            return Task.FromResult(InvalidFolderResult());
+        if (criteria is null)
+        {
+            return Task.FromResult(ToolResult<MessagePage>.Failure(
+                ValidationError(
+                    "validation.invalid_search_criteria",
+                    "Search criteria are required."),
+                CorrelationId()));
+        }
         string scope = $"{RequireFolderScope("imap:search", folderId)}:{HashCriteria(criteria)}";
         return ListPageAsync(
             accountId,
@@ -145,7 +159,14 @@ public sealed class MailboxApplication
         bool isRead,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(references);
+        if (references is null)
+        {
+            return Task.FromResult(ToolResult<int>.Failure(
+                ValidationError(
+                    "validation.invalid_references",
+                    "Message references are required."),
+                CorrelationId()));
+        }
         if (references.Count == 0)
         {
             return Task.FromResult(ToolResult<int>.Failure(
@@ -214,7 +235,8 @@ public sealed class MailboxApplication
                     : null;
                 return new MessagePage(gatewayPage.Messages, null) { NextCursor = nextCursor };
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            page => Math.Max(1, page.Messages.Count)).ConfigureAwait(false);
     }
 
     private bool TryDecodeOffset(
@@ -303,9 +325,15 @@ public sealed class MailboxApplication
 
     private static string RequireFolderScope(string prefix, string folderId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(folderId);
         return $"{prefix}:{folderId}";
     }
+
+    private static ToolResult<MessagePage> InvalidFolderResult() =>
+        ToolResult<MessagePage>.Failure(
+            ValidationError(
+                "validation.invalid_folder_id",
+                "The folder ID is required."),
+            CorrelationId());
 
     private static bool TryValidateReference(MessageReference? reference, out ToolError? error)
     {

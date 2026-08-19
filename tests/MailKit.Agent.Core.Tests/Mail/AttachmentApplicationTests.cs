@@ -10,10 +10,10 @@ namespace MailKit.Agent.Core.Tests.Mail;
 public class AttachmentApplicationTests
 {
     [Test]
-    public async Task ListReReadsMessageAndReturnsOnlyAttachmentDescriptors()
+    public async Task ListUsesDescriptorOnlyGatewayOperation()
     {
         var descriptor = Descriptor();
-        var imap = new FakeImapGateway { Content = new MessageContent { Text = "not returned", Attachments = [descriptor] } };
+        var imap = new FakeImapGateway { Attachments = [descriptor] };
         var app = CreateApplication(imap: imap);
 
         ToolResult<IReadOnlyList<AttachmentDescriptor>> result = await app.ListAsync(
@@ -22,8 +22,8 @@ public class AttachmentApplicationTests
         Assert.Multiple(() =>
         {
             Assert.That(result.Data, Is.EqualTo(new[] { descriptor }));
-            Assert.That(imap.ReadCalls, Is.EqualTo(1));
-            Assert.That(imap.LastMarkAsRead, Is.False);
+            Assert.That(imap.ListAttachmentCalls, Is.EqualTo(1));
+            Assert.That(imap.ReadCalls, Is.Zero);
             Assert.That(imap.OpenCalls, Is.Zero);
         });
     }
@@ -35,7 +35,7 @@ public class AttachmentApplicationTests
         var store = new FakeStore { Profile = Profile() };
         var imap = new FakeImapGateway
         {
-            Content = new MessageContent { Attachments = [descriptor] },
+            Attachments = [descriptor],
             AttachmentBytes = Encoding.UTF8.GetBytes("attachment body")
         };
         var writer = new FakeWriter();
@@ -49,8 +49,9 @@ public class AttachmentApplicationTests
         {
             Assert.That(result.Ok, Is.True);
             Assert.That(store.GetCalls, Is.EqualTo(1));
-            Assert.That(imap.ReadCalls, Is.EqualTo(1));
-            Assert.That(imap.OpenCalls, Is.EqualTo(1));
+            Assert.That(imap.ReadCalls, Is.Zero);
+            Assert.That(imap.OpenDescribedCalls, Is.EqualTo(1));
+            Assert.That(imap.OpenCalls, Is.Zero);
             Assert.That(imap.LastReference, Is.EqualTo(reference));
             Assert.That(writer.Descriptor, Is.EqualTo(descriptor));
             Assert.That(writer.DestinationName, Is.EqualTo("safe-name.txt"));
@@ -65,7 +66,7 @@ public class AttachmentApplicationTests
         var imap = new FakeImapGateway();
         var pop3 = new FakePop3Gateway
         {
-            Content = new MessageContent { Attachments = [descriptor] }
+            Attachments = [descriptor]
         };
         var app = CreateApplication(imap: imap, pop3: pop3);
 
@@ -76,7 +77,7 @@ public class AttachmentApplicationTests
         Assert.Multiple(() =>
         {
             Assert.That(result.Ok, Is.True);
-            Assert.That(pop3.OpenCalls, Is.EqualTo(1));
+            Assert.That(pop3.OpenDescribedCalls, Is.EqualTo(1));
             Assert.That(imap.OpenCalls, Is.Zero);
         });
     }
@@ -84,7 +85,7 @@ public class AttachmentApplicationTests
     [Test]
     public async Task SaveRejectsUnknownAttachmentBeforeOpeningStream()
     {
-        var imap = new FakeImapGateway { Content = new MessageContent { Attachments = [Descriptor()] } };
+        var imap = new FakeImapGateway { Attachments = [Descriptor()] };
         var writer = new FakeWriter();
         var app = CreateApplication(imap: imap, writer: writer);
 
@@ -95,6 +96,7 @@ public class AttachmentApplicationTests
         Assert.Multiple(() =>
         {
             Assert.That(result.Error!.Code, Is.EqualTo("attachment.not_found"));
+            Assert.That(imap.OpenDescribedCalls, Is.EqualTo(1));
             Assert.That(imap.OpenCalls, Is.Zero);
             Assert.That(writer.Calls, Is.Zero);
         });
@@ -146,9 +148,12 @@ public class AttachmentApplicationTests
     private sealed class FakeImapGateway : IImapGateway
     {
         public MessageContent Content { get; init; } = new();
+        public IReadOnlyList<AttachmentDescriptor> Attachments { get; init; } = [];
         public byte[] AttachmentBytes { get; init; } = [1];
         public int ReadCalls { get; private set; }
         public int OpenCalls { get; private set; }
+        public int ListAttachmentCalls { get; private set; }
+        public int OpenDescribedCalls { get; private set; }
         public bool LastMarkAsRead { get; private set; }
         public MessageReference? LastReference { get; private set; }
         public Task<IReadOnlyList<FolderDescriptor>> ListFoldersAsync(AccountProfile profile, PasswordCredentialLease credential, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<FolderDescriptor>>([]);
@@ -162,6 +167,23 @@ public class AttachmentApplicationTests
             return Task.FromResult(Content);
         }
         public Task<int> MarkReadAsync(AccountProfile profile, PasswordCredentialLease credential, IReadOnlyList<MessageReference> references, bool isRead, CancellationToken cancellationToken) => Task.FromResult(0);
+        public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, CancellationToken cancellationToken)
+        {
+            ListAttachmentCalls++;
+            LastReference = reference;
+            return Task.FromResult(Attachments);
+        }
+        public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken)
+        {
+            OpenDescribedCalls++;
+            LastReference = reference;
+            AttachmentDescriptor? descriptor = Attachments.FirstOrDefault(item => item.Id == attachmentId);
+            return descriptor is null
+                ? Task.FromException<OpenedAttachment>(new MailOperationException(new ToolError(
+                    "attachment.not_found", ErrorCategory.Validation, "Not found.", false, null, null)))
+                : Task.FromResult(new OpenedAttachment(
+                    descriptor, new MemoryStream(AttachmentBytes, writable: false)));
+        }
         public Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken)
         {
             OpenCalls++;
@@ -173,9 +195,21 @@ public class AttachmentApplicationTests
     private sealed class FakePop3Gateway : IPop3Gateway
     {
         public MessageContent Content { get; init; } = new();
+        public IReadOnlyList<AttachmentDescriptor> Attachments { get; init; } = [];
         public int OpenCalls { get; private set; }
+        public int OpenDescribedCalls { get; private set; }
         public Task<MessagePage> ListMessagesAsync(AccountProfile profile, PasswordCredentialLease credential, int offset, int pageSize, CancellationToken cancellationToken) => Task.FromResult(new MessagePage([], null));
         public Task<MessageContent> ReadAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, BodyMode bodyMode, CancellationToken cancellationToken) => Task.FromResult(Content);
+        public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, CancellationToken cancellationToken) => Task.FromResult(Attachments);
+        public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken)
+        {
+            OpenDescribedCalls++;
+            AttachmentDescriptor? descriptor = Attachments.FirstOrDefault(item => item.Id == attachmentId);
+            return descriptor is null
+                ? Task.FromException<OpenedAttachment>(new MailOperationException(new ToolError(
+                    "attachment.not_found", ErrorCategory.Validation, "Not found.", false, null, null)))
+                : Task.FromResult(new OpenedAttachment(descriptor, new MemoryStream([1])));
+        }
         public Task<Stream> OpenAttachmentAsync(AccountProfile profile, PasswordCredentialLease credential, MessageReference reference, string attachmentId, CancellationToken cancellationToken)
         {
             OpenCalls++;

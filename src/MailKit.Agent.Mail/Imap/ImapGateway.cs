@@ -229,6 +229,60 @@ public sealed class ImapGateway : IImapGateway
         }, cancellationToken);
     }
 
+    public Task<IReadOnlyList<AttachmentDescriptor>> ListAttachmentsAsync(
+        AccountProfile profile,
+        PasswordCredentialLease credential,
+        MessageReference reference,
+        CancellationToken cancellationToken)
+    {
+        ValidateReference(profile, reference);
+        return WithClientAsync(profile, credential, "attachment_list", async client =>
+        {
+            (IMailFolder folder, UniqueId uid) = await OpenReferencedFolderAsync(
+                client, profile, reference, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<StructuredAttachment> attachments = await GetStructuredAttachmentsAsync(
+                folder, uid, profile, reference, cancellationToken).ConfigureAwait(false);
+            return (IReadOnlyList<AttachmentDescriptor>)attachments
+                .Select(item => item.Descriptor)
+                .ToArray();
+        }, cancellationToken);
+    }
+
+    public Task<OpenedAttachment> OpenAttachmentWithDescriptorAsync(
+        AccountProfile profile,
+        PasswordCredentialLease credential,
+        MessageReference reference,
+        string attachmentId,
+        CancellationToken cancellationToken)
+    {
+        ValidateReference(profile, reference);
+        ArgumentException.ThrowIfNullOrWhiteSpace(attachmentId);
+        return WithClientAsync(profile, credential, "attachment_save", async client =>
+        {
+            (IMailFolder folder, UniqueId uid) = await OpenReferencedFolderAsync(
+                client, profile, reference, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<StructuredAttachment> attachments = await GetStructuredAttachmentsAsync(
+                folder, uid, profile, reference, cancellationToken).ConfigureAwait(false);
+            StructuredAttachment? selected = attachments.FirstOrDefault(item =>
+                string.Equals(item.Descriptor.Id, attachmentId, StringComparison.Ordinal));
+            if (selected is null)
+                throw AttachmentNotFound();
+
+            MimeEntity entity;
+            using (var scope = CreateScope(cancellationToken))
+            {
+                entity = await folder.GetBodyPartAsync(uid, selected.Part, scope.Token)
+                    .ConfigureAwait(false);
+            }
+            using (entity)
+            {
+                Stream content = await DecodeAttachmentAsync(entity, cancellationToken)
+                    .ConfigureAwait(false);
+                return new OpenedAttachment(selected.Descriptor, content);
+            }
+        }, cancellationToken);
+    }
+
     public Task<Stream> OpenAttachmentAsync(
         AccountProfile profile,
         PasswordCredentialLease credential,
@@ -290,6 +344,86 @@ public sealed class ImapGateway : IImapGateway
             output.Position = 0;
             return (Stream)output;
         }, cancellationToken);
+    }
+
+    private async Task<(IMailFolder Folder, UniqueId Uid)> OpenReferencedFolderAsync(
+        ImapClient client,
+        AccountProfile profile,
+        MessageReference reference,
+        CancellationToken cancellationToken)
+    {
+        string folderId = reference.FolderId!;
+        IMailFolder folder = GetFolder(client, folderId, cancellationToken);
+        await OpenAsync(folder, FolderAccess.ReadOnly, cancellationToken).ConfigureAwait(false);
+        EnsureUidValidity(folder, reference.UidValidity!.Value, profile.Id, folderId);
+        return (folder, new UniqueId(reference.Uid!.Value));
+    }
+
+    private async Task<IReadOnlyList<StructuredAttachment>> GetStructuredAttachmentsAsync(
+        IMailFolder folder,
+        UniqueId uid,
+        AccountProfile profile,
+        MessageReference reference,
+        CancellationToken cancellationToken)
+    {
+        IList<IMessageSummary> summaries;
+        using (var scope = CreateScope(cancellationToken))
+        {
+            summaries = await folder.FetchAsync(
+                new[] { uid },
+                MessageSummaryItems.UniqueId | MessageSummaryItems.BodyStructure,
+                scope.Token).ConfigureAwait(false);
+        }
+
+        IMessageSummary? summary = summaries.FirstOrDefault(item => item.UniqueId == uid);
+        if (summary is null)
+            throw ReferenceConflict(profile.Id, reference.FolderId!);
+
+        return summary.BodyParts
+            .Select((part, index) => new { Part = part, Index = index })
+            .Where(item => IsAttachment(item.Part))
+            .Select(item => new StructuredAttachment(
+                item.Part,
+                new AttachmentDescriptor(
+                    $"part-{item.Index + 1}",
+                    item.Part.FileName,
+                    item.Part.ContentType.MimeType.ToLowerInvariant(),
+                    item.Part.Octets,
+                    string.Equals(
+                        item.Part.ContentDisposition?.Disposition,
+                        ContentDisposition.Inline,
+                        StringComparison.OrdinalIgnoreCase),
+                    item.Part.ContentId)))
+            .ToArray();
+    }
+
+    private async Task<Stream> DecodeAttachmentAsync(
+        MimeEntity attachment,
+        CancellationToken cancellationToken)
+    {
+        var output = new MemoryStream();
+        try
+        {
+            using var scope = CreateScope(cancellationToken);
+            switch (attachment)
+            {
+                case MimePart { Content: not null } part:
+                    await part.Content.DecodeToAsync(output, scope.Token).ConfigureAwait(false);
+                    break;
+                case MessagePart { Message: not null } messagePart:
+                    await messagePart.Message.WriteToAsync(output, scope.Token).ConfigureAwait(false);
+                    break;
+                default:
+                    throw AttachmentNotFound();
+            }
+            output.Position = 0;
+            return output;
+        }
+        catch
+        {
+            output.Dispose();
+            throw;
+        }
     }
 
     private async Task<MessagePage> SearchAndFetchPageAsync(
@@ -528,6 +662,9 @@ public sealed class ImapGateway : IImapGateway
         !string.IsNullOrWhiteSpace(entity.ContentDisposition?.FileName) ||
         !string.IsNullOrWhiteSpace(entity.ContentType.Name);
 
+    private static bool IsAttachment(BodyPartBasic part) =>
+        part.IsAttachment || !string.IsNullOrWhiteSpace(part.FileName);
+
     private static MessageContent WithSeenUpdateWarning(MessageContent converted) =>
         converted with
         {
@@ -583,4 +720,30 @@ public sealed class ImapGateway : IImapGateway
             false,
             null,
             new Dictionary<string, string> { ["protocol"] = "imap" }));
+
+    private static MailOperationException ReferenceConflict(string accountId, string folderId) =>
+        new(new ToolError(
+            "message.reference_conflict",
+            ErrorCategory.Conflict,
+            "The message reference no longer identifies an IMAP message.",
+            false,
+            null,
+            new Dictionary<string, string>
+            {
+                ["account_id"] = accountId,
+                ["folder_id"] = folderId
+            }));
+
+    private static MailOperationException AttachmentNotFound() =>
+        new(new ToolError(
+            "attachment.not_found",
+            ErrorCategory.Validation,
+            "The requested attachment was not found.",
+            false,
+            null,
+            null));
+
+    private sealed record StructuredAttachment(
+        BodyPartBasic Part,
+        AttachmentDescriptor Descriptor);
 }
