@@ -94,6 +94,7 @@ mailkit-agent account credential delete --account <account-id>
 - POP3 没有服务器端已读状态：`pop3_message_read` 永远不会标记已读，也不存在未读筛选或 `message_mark_read` 的等价工具。
 - POP3 没有文件夹和搜索：没有对应的 `folder_list` 或 `message_search` 工具。
 - POP3 引用基于 UIDL：`pop3_message_list` 返回的引用使用 UIDL 标识邮件，服务器必须支持 UIDL 能力。
+- 翻页期间若服务器上的邮件被删除，基于序号的分页可能跳过一封现存邮件；需要精确遍历时建议一次取回或以 UIDL 为准自行比对。
 
 ## 附件与本地目录
 
@@ -111,6 +112,7 @@ mailkit-agent account credential delete --account <account-id>
 - 每次发送绑定调用方选择的 `idempotency_key`（字符集 `A-Za-z0-9._-`，最长 128）：同一密钥不会投递第二封邮件。
 - `send_status` 报告持久状态：`prepared`、`attempting`、`succeeded`、`failed`、`indeterminate`。
 - 结果未知的发送（`indeterminate`，例如投递中途连接断开）不会自动重试：先查询 `send_status`，再由用户决定如何处理。
+- 收件地址仅支持 ASCII（显示名支持 Unicode）；SMTPUTF8 服务器能力协商已实现，但当前经 MCP 不可达，属后续计划。
 
 ## 尚未支持的能力
 
