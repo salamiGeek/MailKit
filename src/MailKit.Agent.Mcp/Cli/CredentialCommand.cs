@@ -91,6 +91,13 @@ public sealed class CredentialCommand
 			_console.WriteLine(exception.Code);
 			return ErrorExitCode;
 		}
+		catch (ArgumentException)
+		{
+			// The vault rejects oversized secrets with ArgumentException; the CLI
+			// must stay a sanitized, fixed message and never echo the secret.
+			_console.WriteLine("The password exceeds the credential storage limit.");
+			return ErrorExitCode;
+		}
 	}
 
 	private async Task<int> SetAsync(
