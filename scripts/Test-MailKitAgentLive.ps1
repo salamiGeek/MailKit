@@ -125,6 +125,19 @@ try {
             Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
         }
 
+        # Re-forward the operator's non-secret selections (stable IMAP UID, POP3 UIDL,
+        # and attachment ID) from the pre-clear snapshot in $savedEnvironment, so the
+        # confirmed mark-read and attachment phases receive the caller's choices.
+        if (-not [string]::IsNullOrWhiteSpace($savedEnvironment['MAILKIT_AGENT_LIVE_IMAP_UID'])) {
+            [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_IMAP_UID', $savedEnvironment['MAILKIT_AGENT_LIVE_IMAP_UID'])
+        }
+        if (-not [string]::IsNullOrWhiteSpace($savedEnvironment['MAILKIT_AGENT_LIVE_POP3_UIDL'])) {
+            [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_POP3_UIDL', $savedEnvironment['MAILKIT_AGENT_LIVE_POP3_UIDL'])
+        }
+        if (-not [string]::IsNullOrWhiteSpace($savedEnvironment['MAILKIT_AGENT_LIVE_ATTACHMENT_ID'])) {
+            [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_ATTACHMENT_ID', $savedEnvironment['MAILKIT_AGENT_LIVE_ATTACHMENT_ID'])
+        }
+
         [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_ACCOUNT_ID', $AccountId)
         [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_USERNAME', $Username)
         [Environment]::SetEnvironmentVariable('MAILKIT_AGENT_LIVE_DATA_DIR', $dataDirectory)

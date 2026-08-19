@@ -45,10 +45,17 @@ public class FoundationServerTests
         });
     }
 
-    [Test]
-    public async Task FakeGatewaysServeFullProtocolWorkflowOverStdio()
-    {
-        var repositoryRoot = FindRepositoryRoot();
+	[Test]
+	public async Task FakeGatewaysServeFullProtocolWorkflowOverStdio()
+	{
+#if !DEBUG
+		// The fake gateways are compiled into the server only in DEBUG builds and the
+		// Release server rejects MAILKIT_AGENT_TEST_MODE by design (proven separately
+		// by PublishedReleaseOutputRejectsTestMode), so this e2e runs only against a
+		// Debug server build. Accepted trade-off: Release CI skips this flow.
+		Assert.Ignore("fake gateways require a Debug server build; MAILKIT_AGENT_TEST_MODE is rejected by Release builds");
+#endif
+		var repositoryRoot = FindRepositoryRoot();
         await using var server = await StdioMcpServer.StartAsync(
             "MailKit Agent fixture test",
             repositoryRoot,
