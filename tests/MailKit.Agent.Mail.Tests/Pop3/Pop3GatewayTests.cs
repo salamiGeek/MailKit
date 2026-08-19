@@ -72,6 +72,32 @@ public sealed class Pop3GatewayTests
     }
 
     [Test]
+    public async Task ListFallsBackToRetrWhenTopIsNotAdvertised()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(ConversationWithoutTop(
+            count: 1,
+            new("UIDL\r\n", Uidl("uidl-001")),
+            new("LIST\r\n", ListSizes(120)),
+            new("RETR 1\r\n", Message(MessageText))));
+        var gateway = CreateGateway(session);
+
+        MessagePage page = await gateway.ListMessagesAsync(
+            Profile, credential, offset: 0, pageSize: 1, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(page.Messages.Single().Reference,
+                Is.EqualTo(MessageReference.ForPop3("personal", "uidl-001")));
+            Assert.That(page.Messages.Single().Subject, Is.EqualTo("Replay message"));
+            Assert.That(page.Messages.Single().InternalDate, Is.Null);
+            Assert.That(page.Messages.Single().Flags, Is.Empty);
+            Assert.That(page.Messages.Single().HasAttachments, Is.False);
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
     public async Task ReadReloadsUidlsAndUsesRelocatedNumericIndex()
     {
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
@@ -138,6 +164,33 @@ public sealed class Pop3GatewayTests
                 Profile, credential, 0, 25, CancellationToken.None))!;
 
         Assert.That(exception.Error.Category, Is.EqualTo(ErrorCategory.Conflict));
+        session.AssertComplete();
+    }
+
+    [TestCase("1")]
+    [TestCase("2 uidl-private-mailbox-text")]
+    public void MalformedUidlResponseReturnsSanitizedStableConflict(string malformedEntry)
+    {
+        const string privateMarker = "private-mailbox-text";
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(Conversation(
+            count: 1,
+            new Pop3ReplayCommand(
+                "UIDL\r\n",
+                $"+OK {privateMarker}\r\n{malformedEntry}\r\n.\r\n")));
+        var gateway = CreateGateway(session);
+
+        MailOperationException exception = Assert.ThrowsAsync<MailOperationException>(async () =>
+            await gateway.ListMessagesAsync(
+                Profile, credential, 0, 25, CancellationToken.None))!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception.Error.Code, Is.EqualTo("pop3.uidl_conflict"));
+            Assert.That(exception.Error.Category, Is.EqualTo(ErrorCategory.Conflict));
+            Assert.That(exception.Error.Message, Does.Not.Contain(privateMarker));
+            Assert.That(exception.Error.Details?.Values, Has.None.Contains(privateMarker));
+        });
         session.AssertComplete();
     }
 
@@ -212,6 +265,7 @@ public sealed class Pop3GatewayTests
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
         using var session = new ReplaySession(BuildConversation(
             count: 1,
+            includeTop: true,
             includeQuit: false,
             new("UIDL\r\n", Uidl("uidl-001")),
             new("RETR 1\r\n", $"+OK {privateMarker}\r\n")));
@@ -306,16 +360,24 @@ public sealed class Pop3GatewayTests
     private static IReadOnlyList<Pop3ReplayCommand> Conversation(
         int count,
         params Pop3ReplayCommand[] operationCommands) =>
-        BuildConversation(count, includeQuit: true, operationCommands);
+        BuildConversation(count, includeTop: true, includeQuit: true, operationCommands);
+
+    private static IReadOnlyList<Pop3ReplayCommand> ConversationWithoutTop(
+        int count,
+        params Pop3ReplayCommand[] operationCommands) =>
+        BuildConversation(count, includeTop: false, includeQuit: true, operationCommands);
 
     private static IReadOnlyList<Pop3ReplayCommand> BuildConversation(
         int count,
+        bool includeTop,
         bool includeQuit,
         params Pop3ReplayCommand[] operationCommands)
     {
         string capabilities =
             "+OK Capability list follows\r\n" +
-            "USER\r\nTOP\r\nUIDL\r\n.\r\n";
+            "USER\r\n" +
+            (includeTop ? "TOP\r\n" : string.Empty) +
+            "UIDL\r\n.\r\n";
         var commands = new List<Pop3ReplayCommand>
         {
             new("", "+OK replay ready\r\n"),
