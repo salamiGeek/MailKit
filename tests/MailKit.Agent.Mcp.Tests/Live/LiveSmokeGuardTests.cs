@@ -290,6 +290,135 @@ public sealed class LiveSmokeGuardTests
 		}
 	}
 
+	[Test]
+	public void LiveWrapperScriptForwardsSelectionVariablesAfterTheClearLoop()
+	{
+		var script = WrapperScriptText;
+		int clearLoopIndex = script.IndexOf(
+			"Clear any inherited live variables first",
+			StringComparison.Ordinal);
+		Assert.That(
+			clearLoopIndex,
+			Is.GreaterThanOrEqualTo(0),
+			"The wrapper must clear inherited live variables before the test run.");
+
+		// Each operator selection must be re-set from the pre-clear snapshot after the
+		// clear loop; otherwise -ConfirmMarkRead, attachment_save, and pop3_message_read
+		// can never receive the caller's stable IDs.
+		string[] selectionNames =
+		[
+			LiveProtocolTests.ImapUidVariable,
+			LiveProtocolTests.Pop3UidlVariable,
+			LiveProtocolTests.AttachmentIdVariable
+		];
+		foreach (string name in selectionNames)
+		{
+			int forwardIndex = script.IndexOf(
+				"[Environment]::SetEnvironmentVariable('" + name + "'",
+				StringComparison.Ordinal);
+			Assert.That(
+				forwardIndex,
+				Is.GreaterThan(clearLoopIndex),
+				$"{name} must be re-set after the clear loop so the confirmed phases receive it.");
+		}
+	}
+
+	[Test]
+	public async Task LiveWrapperForwardsSelectionVariablesToTheTestProcess()
+	{
+		if (!OperatingSystem.IsWindows())
+			Assert.Ignore("The dotnet.cmd environment shim requires Windows.");
+
+		// Behavioral proof (beyond the source scan): shim `dotnet` with a batch file
+		// that records the environment the wrapper hands to the test process, then run
+		// the wrapper with the three selection variables set and no confirmation
+		// switches, and once with -ConfirmMarkRead.
+		string shimDirectory = Path.Combine(
+			Path.GetTempPath(),
+			"mailkit-agent-dotnet-shim-" + Guid.NewGuid().ToString("N"));
+		string markerPath = Path.Combine(shimDirectory, "child-environment.txt");
+		Directory.CreateDirectory(shimDirectory);
+		File.WriteAllText(
+			Path.Combine(shimDirectory, "dotnet.cmd"),
+			"@echo off\r\n" +
+			"> \"" + markerPath + "\" echo UID=%MAILKIT_AGENT_LIVE_IMAP_UID%" +
+			" UIDL=%MAILKIT_AGENT_LIVE_POP3_UIDL%" +
+			" ATT=%MAILKIT_AGENT_LIVE_ATTACHMENT_ID%" +
+			" CONFIRM_MARK=%MAILKIT_AGENT_LIVE_CONFIRM_MARK_READ%" +
+			" CONFIRM_SEND=%MAILKIT_AGENT_LIVE_CONFIRM_SEND%" +
+			" RECIPIENT=%MAILKIT_AGENT_LIVE_RECIPIENT%" +
+			" DATA=%MAILKIT_AGENT_LIVE_DATA_DIR%\r\n" +
+			"exit /b 0\r\n");
+
+		string[] selectionNames =
+		[
+			LiveProtocolTests.ImapUidVariable,
+			LiveProtocolTests.Pop3UidlVariable,
+			LiveProtocolTests.AttachmentIdVariable
+		];
+		string? originalPath = Environment.GetEnvironmentVariable("PATH");
+		Dictionary<string, string?> originalValues = selectionNames
+			.ToDictionary(name => name, name => Environment.GetEnvironmentVariable(name));
+		try
+		{
+			Environment.SetEnvironmentVariable("PATH", shimDirectory + ";" + originalPath);
+			Environment.SetEnvironmentVariable(LiveProtocolTests.ImapUidVariable, "uid-4242");
+			Environment.SetEnvironmentVariable(LiveProtocolTests.Pop3UidlVariable, "uidl-probe-1");
+			Environment.SetEnvironmentVariable(LiveProtocolTests.AttachmentIdVariable, "att-probe-9");
+
+			var readOnly = await RunWrapperScriptAsync(
+				"-AccountId", "live-guard-forward",
+				"-Username", "user@example.test",
+				"-ImapHost", "imap.example.test",
+				"-Pop3Host", "pop3.example.test",
+				"-SmtpHost", "smtp.example.test");
+			Assert.That(readOnly.ExitCode, Is.Zero, readOnly.Output);
+			string readOnlyEnvironment = ReadMarkerFile(markerPath);
+			Assert.Multiple(() =>
+			{
+				Assert.That(readOnlyEnvironment, Does.Contain("UID=uid-4242"));
+				Assert.That(readOnlyEnvironment, Does.Contain("UIDL=uidl-probe-1"));
+				Assert.That(readOnlyEnvironment, Does.Contain("ATT=att-probe-9"));
+				// cmd expands undefined variables to nothing, so "NAME= " means empty:
+				// the confirmation gates must stay closed unless the switches are given.
+				Assert.That(readOnlyEnvironment, Does.Contain("CONFIRM_MARK= "));
+				Assert.That(readOnlyEnvironment, Does.Contain("CONFIRM_SEND= "));
+				Assert.That(readOnlyEnvironment, Does.Contain("RECIPIENT= "));
+				// The isolated data directory must be forwarded to the test process.
+				Assert.That(readOnlyEnvironment, Does.Contain("DATA="));
+				Assert.That(readOnlyEnvironment, Does.Contain("mailkit-agent-live-"));
+			});
+
+			File.Delete(markerPath);
+			var markRead = await RunWrapperScriptAsync(
+				"-AccountId", "live-guard-forward",
+				"-Username", "user@example.test",
+				"-ImapHost", "imap.example.test",
+				"-Pop3Host", "pop3.example.test",
+				"-SmtpHost", "smtp.example.test",
+				"-ConfirmMarkRead");
+			Assert.That(markRead.ExitCode, Is.Zero, markRead.Output);
+			Assert.That(
+				ReadMarkerFile(markerPath),
+				Does.Contain("CONFIRM_MARK=yes"),
+				"-ConfirmMarkRead must forward the confirmation gate.");
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("PATH", originalPath);
+			foreach ((string name, string? value) in originalValues)
+				Environment.SetEnvironmentVariable(name, value);
+			if (Directory.Exists(shimDirectory))
+				Directory.Delete(shimDirectory, recursive: true);
+		}
+	}
+
+	private static string ReadMarkerFile(string path)
+	{
+		Assert.That(File.Exists(path), Is.True, "The dotnet shim did not capture the child environment.");
+		return File.ReadAllText(path).Trim();
+	}
+
 	private static IEnumerable<string> ExtractJsonPropertyNames(string json)
 	{
 		foreach (System.Text.RegularExpressions.Match match in
