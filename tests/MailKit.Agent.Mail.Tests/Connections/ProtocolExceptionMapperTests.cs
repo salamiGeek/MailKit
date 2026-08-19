@@ -56,6 +56,25 @@ public sealed class ProtocolExceptionMapperTests
         Assert.That(thrown, Is.SameAs(cancellation));
     }
 
+    [Test]
+    public void ArbitraryDetailLabelsAreReplacedWithPublicAllowlistedValues()
+    {
+        var mapped = ProtocolExceptionMapper.Map(
+            new IOException("private-server-marker"),
+            "private-protocol-marker",
+            "private-operation-marker",
+            CancellationToken.None);
+
+        var serialized = JsonSerializer.Serialize(mapped.Error);
+        Assert.Multiple(() =>
+        {
+            Assert.That(mapped.Error.Details!["protocol"], Is.EqualTo("unknown"));
+            Assert.That(mapped.Error.Details["operation"], Is.EqualTo("unknown"));
+            Assert.That(serialized, Does.Not.Contain("private-protocol-marker"));
+            Assert.That(serialized, Does.Not.Contain("private-operation-marker"));
+        });
+    }
+
     private static Exception CreateException(string kind) => kind switch
     {
         "system_auth" => new System.Security.Authentication.AuthenticationException("private-server-marker"),

@@ -7,9 +7,9 @@ using MailKitAuthenticationException = MailKit.Security.AuthenticationException;
 
 namespace MailKit.Agent.Mail.Connections;
 
-public static class ProtocolExceptionMapper
+internal static class ProtocolExceptionMapper
 {
-    public static MailOperationException Map(
+    internal static MailOperationException Map(
         Exception exception,
         string protocol,
         string operation,
@@ -26,8 +26,8 @@ public static class ProtocolExceptionMapper
 
         var details = new Dictionary<string, string>
         {
-            ["protocol"] = protocol,
-            ["operation"] = operation
+            ["protocol"] = SanitizeProtocol(protocol),
+            ["operation"] = SanitizeOperation(operation)
         };
 
         var error = exception switch
@@ -60,6 +60,34 @@ public static class ProtocolExceptionMapper
 
         return new MailOperationException(error);
     }
+
+    private static string SanitizeProtocol(string protocol) => protocol switch
+    {
+        "imap" => "imap",
+        "pop3" => "pop3",
+        "smtp" => "smtp",
+        _ => "unknown"
+    };
+
+    private static string SanitizeOperation(string operation) => operation switch
+    {
+        "connect" => "connect",
+        "authenticate" => "authenticate",
+        "connection_test" => "connection_test",
+        "folder_list" => "folder_list",
+        "message_list" => "message_list",
+        "message_search" => "message_search",
+        "message_read" => "message_read",
+        "message_mark_read" => "message_mark_read",
+        "pop3_message_list" => "pop3_message_list",
+        "pop3_message_read" => "pop3_message_read",
+        "attachment_list" => "attachment_list",
+        "attachment_save" => "attachment_save",
+        "send_prepare" => "send_prepare",
+        "send_commit" => "send_commit",
+        "send_status" => "send_status",
+        _ => "unknown"
+    };
 
     private static ToolError Create(
         string code,
