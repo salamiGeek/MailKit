@@ -2,8 +2,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Credentials;
+using MailKit.Agent.Core.Mail;
 using MailKit.Agent.Core.Policy;
 using MailKit.Agent.Core.Serialization;
+using MailKit.Agent.Core.Storage;
+using MailKit.Agent.Mail.Attachments;
 using MailKit.Agent.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,6 +40,7 @@ public static class McpServerHost
 			_ => new JsonAccountProfileStore(dataDirectory));
 		builder.Services.AddSingleton(vault);
 		builder.Services.AddSingleton(OperationPolicy.Default);
+		ConfigureMailStorage(builder.Services, dataDirectory);
 		builder.Services
 			.AddMcpServer()
 			.WithStdioServerTransport()
@@ -44,5 +48,19 @@ public static class McpServerHost
 			.WithTools<AccountTools>(toolSerializerOptions);
 
 		await builder.Build().RunAsync();
+	}
+
+	internal static void ConfigureMailStorage(
+		IServiceCollection services,
+		string dataDirectory)
+	{
+		ArgumentNullException.ThrowIfNull(services);
+		ArgumentException.ThrowIfNullOrWhiteSpace(dataDirectory);
+
+		MailFileOptions options = MailFileOptionsResolver.Resolve(dataDirectory);
+		services.AddSingleton(options);
+		services.AddSingleton(MailSafetyLimits.Default);
+		services.AddSingleton(new UploadAttachmentPathPolicy(options.UploadRoots));
+		services.AddSingleton<IAttachmentWriter, AttachmentService>();
 	}
 }
