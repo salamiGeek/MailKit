@@ -254,8 +254,8 @@ public sealed class ImapGateway : IImapGateway
                     new UniqueId(reference.Uid!.Value), scope.Token).ConfigureAwait(false);
             }
 
-            if (partLocator.Find(message, attachmentId) is not MimePart { Content: not null } part ||
-                !IsAttachment(part))
+            MimeEntity? attachment = partLocator.Find(message, attachmentId);
+            if (attachment is null || !IsAttachment(attachment))
             {
                 throw new MailOperationException(new ToolError(
                     "attachment.not_found",
@@ -269,7 +269,23 @@ public sealed class ImapGateway : IImapGateway
             var output = new MemoryStream();
             using (var scope = CreateScope(cancellationToken))
             {
-                await part.Content.DecodeToAsync(output, scope.Token).ConfigureAwait(false);
+                switch (attachment)
+                {
+                    case MimePart { Content: not null } part:
+                        await part.Content.DecodeToAsync(output, scope.Token).ConfigureAwait(false);
+                        break;
+                    case MessagePart { Message: not null } messagePart:
+                        await messagePart.Message.WriteToAsync(output, scope.Token).ConfigureAwait(false);
+                        break;
+                    default:
+                        throw new MailOperationException(new ToolError(
+                            "attachment.not_found",
+                            ErrorCategory.Validation,
+                            "The requested attachment was not found.",
+                            false,
+                            null,
+                            null));
+                }
             }
             output.Position = 0;
             return (Stream)output;
@@ -298,9 +314,6 @@ public sealed class ImapGateway : IImapGateway
             .OrderByDescending(uid => uid.Id)
             .ToArray();
         UniqueId[] pageUids = ordered.Skip(offset).Take(pageSize).ToArray();
-        int? nextOffset = offset + pageUids.Length < ordered.Length
-            ? offset + pageUids.Length
-            : null;
 
         if (pageUids.Length == 0)
             return new MessagePage(Array.Empty<MessageEnvelope>(), null);
@@ -320,6 +333,9 @@ public sealed class ImapGateway : IImapGateway
             .Select(uid => ToMessageEnvelope(
                 accountId, folderId, uidValidity, byUid[uid.Id]))
             .ToArray();
+        int? nextOffset = offset + pageUids.Length < ordered.Length
+            ? offset + messages.Length
+            : null;
 
         return new MessagePage(messages, nextOffset);
     }
@@ -507,10 +523,10 @@ public sealed class ImapGateway : IImapGateway
         return output.ToString();
     }
 
-    private static bool IsAttachment(MimePart part) =>
-        part.IsAttachment ||
-        !string.IsNullOrWhiteSpace(part.ContentDisposition?.FileName) ||
-        !string.IsNullOrWhiteSpace(part.ContentType.Name);
+    private static bool IsAttachment(MimeEntity entity) =>
+        entity.IsAttachment ||
+        !string.IsNullOrWhiteSpace(entity.ContentDisposition?.FileName) ||
+        !string.IsNullOrWhiteSpace(entity.ContentType.Name);
 
     private static MessageContent WithSeenUpdateWarning(MessageContent converted) =>
         converted with

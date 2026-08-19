@@ -202,6 +202,89 @@ public sealed class ConnectionSecurityTests
     }
 
     [Test]
+    public async Task CleanupTimeoutPreservesAuthenticationErrorAndDisposesService()
+    {
+        var disconnectRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var proxy = MailServiceProxy.Create();
+        proxy.AuthenticationFailure = new MailKit.Security.AuthenticationException("private-server-marker");
+        proxy.DisconnectOperation = _ => disconnectRelease.Task;
+        var connector = new MailServiceConnector(new ConnectionLimits(
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
+            TimeSpan.FromMilliseconds(25), 1, 1), _ => proxy.Service);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+        Task<IMailService> operation = connector.ConnectAndAuthenticateAsync(
+            "imap", new EndpointSettings("imap.example.test", 993, TlsMode.ImplicitTls),
+            "user@example.test", credential, CancellationToken.None);
+
+        try
+        {
+            var exception = Assert.ThrowsAsync<MailOperationException>(async () =>
+                await operation.WaitAsync(TimeSpan.FromMilliseconds(500)));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(exception!.Error.Code, Is.EqualTo("connection.authentication_failed"));
+                Assert.That(proxy.DisconnectCancellationToken.CanBeCanceled, Is.True);
+                Assert.That(proxy.DisconnectCancellationToken.IsCancellationRequested, Is.True);
+                Assert.That(proxy.DisposeCalls, Is.EqualTo(1));
+            });
+        }
+        finally
+        {
+            disconnectRelease.TrySetResult();
+            try
+            {
+                await operation;
+            }
+            catch
+            {
+                // The asserted primary authentication error is expected.
+            }
+        }
+    }
+
+    [Test]
+    public async Task CallerCancellationAlsoBoundsFailedConnectionCleanup()
+    {
+        var disconnectRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var caller = new CancellationTokenSource();
+        caller.Cancel();
+        var proxy = MailServiceProxy.Create();
+        proxy.AuthenticationFailure = new OperationCanceledException(caller.Token);
+        proxy.DisconnectOperation = _ => disconnectRelease.Task;
+        var connector = new MailServiceConnector(ConnectionLimits.Default, _ => proxy.Service);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+        Task<IMailService> operation = connector.ConnectAndAuthenticateAsync(
+            "imap", new EndpointSettings("imap.example.test", 993, TlsMode.ImplicitTls),
+            "user@example.test", credential, caller.Token);
+
+        try
+        {
+            Assert.That(async () => await operation.WaitAsync(TimeSpan.FromMilliseconds(500)),
+                Throws.InstanceOf<OperationCanceledException>());
+            Assert.Multiple(() =>
+            {
+                Assert.That(proxy.DisconnectCancellationToken.IsCancellationRequested, Is.True);
+                Assert.That(proxy.DisposeCalls, Is.EqualTo(1));
+            });
+        }
+        finally
+        {
+            disconnectRelease.TrySetResult();
+            try
+            {
+                await operation;
+            }
+            catch
+            {
+                // Caller cancellation is expected.
+            }
+        }
+    }
+
+    [Test]
     public void ConnectorRejectsUnknownProtocolWithStableError()
     {
         var connector = new MailServiceConnector();
@@ -266,6 +349,8 @@ public sealed class ConnectionSecurityTests
         public string? Username { get; private set; }
         public Exception? AuthenticationFailure { get; set; }
         public Exception? DisposeFailure { get; set; }
+        public Func<CancellationToken, Task>? DisconnectOperation { get; set; }
+        public CancellationToken DisconnectCancellationToken { get; private set; }
 
         public static MailServiceProxy Create()
         {
@@ -291,9 +376,10 @@ public sealed class ConnectionSecurityTests
                     return AuthenticationFailure is null
                         ? Task.CompletedTask
                         : Task.FromException(AuthenticationFailure);
-                case nameof(IMailService.DisconnectAsync):
+                case nameof(IMailService.DisconnectAsync) when args is [bool, CancellationToken cancellationToken]:
                     DisconnectCalls++;
-                    return Task.CompletedTask;
+                    DisconnectCancellationToken = cancellationToken;
+                    return DisconnectOperation?.Invoke(cancellationToken) ?? Task.CompletedTask;
                 case nameof(IDisposable.Dispose):
                     DisposeCalls++;
                     if (DisposeFailure is not null)

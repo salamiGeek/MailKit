@@ -3,9 +3,11 @@ using MailKit.Agent.Core.Credentials;
 using MailKit.Agent.Core.Errors;
 using MailKit.Agent.Core.Mail;
 using MailKit.Agent.Mail.Imap;
+using MailKit.Agent.Mail.Mime;
 using MailKit.Agent.Mail.Tests.ProtocolScripts;
 using MailKit.Net.Imap;
 using MailKit.Security;
+using MimeKit;
 using System.Reflection;
 using System.Text;
 
@@ -23,6 +25,18 @@ public sealed class ImapGatewayTests
         "--agent\r\nContent-Type: application/octet-stream\r\n" +
         "Content-Disposition: attachment; filename=note.bin\r\n\r\nABC\r\n" +
         "--agent--\r\n";
+    private const string AttachedMessageText = "From: sender@example.test\r\n" +
+        "To: reader@example.test\r\n" +
+        "Subject: Attached replay\r\n" +
+        "Content-Type: multipart/mixed; boundary=outer\r\n\r\n" +
+        "--outer\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nouter body\r\n" +
+        "--outer\r\nContent-Type: message/rfc822\r\n" +
+        "Content-Disposition: attachment; filename=forwarded.eml\r\n\r\n" +
+        "From: forwarded@example.test\r\n" +
+        "To: reader@example.test\r\n" +
+        "Subject: Forwarded message\r\n\r\n" +
+        "forwarded body\r\n" +
+        "--outer--\r\n";
 
     [Test]
     public async Task ListFoldersDiscoversSelectableAndSpecialUseFolders()
@@ -70,6 +84,53 @@ public sealed class ImapGatewayTests
             Assert.That(page.Messages[0].HasAttachments, Is.True);
         });
         session.AssertComplete();
+    }
+
+    [Test]
+    public async Task ExpungedUidAdvancesPageByReturnedLiveMessages()
+    {
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using (var firstSession = new ReplaySession(
+                   Select("A00000005", ExpectedUidValidity, 3),
+                   new("A00000006 UID SEARCH RETURN (ALL) ALL\r\n",
+                       "* ESEARCH (TAG \"A00000006\") UID ALL 30,20,10\r\n" +
+                       "A00000006 OK SEARCH completed\r\n"),
+                   FetchSingleSummary("A00000007", "30,20", 20, "Still live")))
+        {
+            var firstGateway = CreateGateway(firstSession);
+
+            MessagePage firstPage = await firstGateway.ListMessagesAsync(
+                Profile, credential, "INBOX", offset: 0, pageSize: 2,
+                CancellationToken.None);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(firstPage.Messages.Select(message => message.Reference.Uid),
+                    Is.EqualTo(new uint?[] { 20 }));
+                Assert.That(firstPage.NextOffset, Is.EqualTo(1));
+            });
+            firstSession.AssertComplete();
+        }
+
+        using var secondSession = new ReplaySession(
+            Select("A00000005", ExpectedUidValidity, 2),
+            new("A00000006 UID SEARCH RETURN (ALL) ALL\r\n",
+                "* ESEARCH (TAG \"A00000006\") UID ALL 20,10\r\n" +
+                "A00000006 OK SEARCH completed\r\n"),
+            FetchSingleSummary("A00000007", "10", 10, "Next live"));
+        var secondGateway = CreateGateway(secondSession);
+
+        MessagePage secondPage = await secondGateway.ListMessagesAsync(
+            Profile, credential, "INBOX", offset: 1, pageSize: 2,
+            CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(secondPage.Messages.Select(message => message.Reference.Uid),
+                Is.EqualTo(new uint?[] { 10 }));
+            Assert.That(secondPage.NextOffset, Is.Null);
+        });
+        secondSession.AssertComplete();
     }
 
     [Test]
@@ -263,6 +324,43 @@ public sealed class ImapGatewayTests
     }
 
     [Test]
+    public async Task AdvertisedMessageAttachmentCanBeOpenedAsMessageBytes()
+    {
+        using var source = new MemoryStream(Encoding.ASCII.GetBytes(AttachedMessageText));
+        MimeMessage parsed = await MimeMessage.LoadAsync(source);
+        MessageContent advertised = new MimeContentService().Convert(
+            parsed, BodyMode.SafeText, maxCharacters: 10_000);
+        AttachmentDescriptor descriptor = advertised.Attachments.Single();
+        Assert.Multiple(() =>
+        {
+            Assert.That(descriptor.Id, Is.EqualTo("part-2"));
+            Assert.That(descriptor.ContentType, Is.EqualTo("message/rfc822"));
+            Assert.That(descriptor.FileName, Is.EqualTo("forwarded.eml"));
+        });
+
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(
+            Examine("A00000005", ExpectedUidValidity, 1),
+            FetchMessage("A00000006", 42, peek: true, AttachedMessageText));
+        var gateway = CreateGateway(session);
+
+        await using Stream attachment = await gateway.OpenAttachmentAsync(
+            Profile, credential,
+            MessageReference.ForImap("account-one", "INBOX", ExpectedUidValidity, 42),
+            descriptor.Id, CancellationToken.None);
+        using var reader = new StreamReader(attachment, Encoding.ASCII);
+        string attachedMessage = await reader.ReadToEndAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(attachedMessage, Does.Contain("From: forwarded@example.test"));
+            Assert.That(attachedMessage, Does.Contain("Subject: Forwarded message"));
+            Assert.That(attachedMessage, Does.EndWith("forwarded body"));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
     public void MarkReadRejectsChangedUidValidityBeforeStore()
     {
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
@@ -355,12 +453,29 @@ public sealed class ImapGatewayTests
             response + $"{tag} OK FETCH completed\r\n");
     }
 
-    private static ImapReplayCommand FetchMessage(string tag, uint uid, bool peek)
+    private static ImapReplayCommand FetchSingleSummary(
+        string tag,
+        string commandUids,
+        uint responseUid,
+        string subject) =>
+        new($"{tag} UID FETCH {commandUids} (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE)\r\n",
+            $"* 1 FETCH (UID {responseUid} FLAGS () INTERNALDATE \"19-Aug-2026 09:00:00 +0000\" " +
+            $"RFC822.SIZE 120 ENVELOPE (\"Tue, 19 Aug 2026 09:00:00 +0000\" \"{subject}\" " +
+            "((\"Alice\" NIL \"alice\" \"example.test\")) NIL NIL " +
+            "((\"Bob\" NIL \"bob\" \"example.test\")) NIL NIL NIL \"<message@example.test>\") " +
+            "BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 4 1))\r\n" +
+            $"{tag} OK FETCH completed\r\n");
+
+    private static ImapReplayCommand FetchMessage(
+        string tag,
+        uint uid,
+        bool peek,
+        string messageText = MessageText)
     {
         string item = peek ? "BODY.PEEK[]" : "BODY[]";
         return new($"{tag} UID FETCH {uid} ({item})\r\n",
-            $"* 1 FETCH (UID {uid} BODY[] {{{Encoding.ASCII.GetByteCount(MessageText)}}}\r\n" +
-            MessageText + $")\r\n{tag} OK FETCH completed\r\n");
+            $"* 1 FETCH (UID {uid} BODY[] {{{Encoding.ASCII.GetByteCount(messageText)}}}\r\n" +
+            messageText + $")\r\n{tag} OK FETCH completed\r\n");
     }
 
     private sealed class ReplaySession : IImapClientFactory, IDisposable
