@@ -47,12 +47,10 @@ public sealed class ConnectionGate : IDisposable
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
-
-        _global.Dispose();
-        foreach (var semaphore in _keyed.Values)
-            semaphore.Dispose();
+        // SemaphoreSlim must remain valid for acquisitions and leases that already
+        // own permits. Mark the gate closed to new callers and let the managed
+        // semaphores become collectible after all in-flight owners release them.
+        Interlocked.Exchange(ref _disposed, 1);
     }
 
     private sealed class Lease(

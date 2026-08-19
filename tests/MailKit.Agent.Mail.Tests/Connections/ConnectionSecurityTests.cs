@@ -214,6 +214,45 @@ public sealed class ConnectionSecurityTests
                 .With.Property("Error").Property("Code").EqualTo("connection.protocol_error"));
     }
 
+    [TestCase(TlsMode.Plain)]
+    [TestCase((TlsMode)999)]
+    public void ConnectorRejectsInsecureTlsBeforeConstructingService(TlsMode tlsMode)
+    {
+        var factoryCalls = 0;
+        var proxy = MailServiceProxy.Create();
+        var connector = new MailServiceConnector(ConnectionLimits.Default, _ =>
+        {
+            factoryCalls++;
+            return proxy.Service;
+        });
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+
+        Assert.That(async () => await connector.ConnectAndAuthenticateAsync(
+                "imap", new EndpointSettings("imap.example.test", 993, tlsMode),
+                "user@example.test", credential, CancellationToken.None),
+            Throws.TypeOf<MailOperationException>()
+                .With.Property("Error").Property("Code").EqualTo("connection.tls_required"));
+        Assert.That(factoryCalls, Is.Zero);
+    }
+
+    [Test]
+    public async Task GateDisposalKeepsActiveAcquisitionsAndLeaseCleanupSafe()
+    {
+        var gate = new ConnectionGate(new ConnectionLimits(
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1));
+        var first = await gate.AcquireAsync("personal", "imap", CancellationToken.None);
+        var waiting = gate.AcquireAsync("work", "imap", CancellationToken.None).AsTask();
+
+        gate.Dispose();
+
+        Assert.That(async () => await first.DisposeAsync(), Throws.Nothing);
+        var second = await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.That(async () => await second.DisposeAsync(), Throws.Nothing);
+        Assert.That(async () => await first.DisposeAsync(), Throws.Nothing);
+        Assert.That(async () => await gate.AcquireAsync("third", "imap", CancellationToken.None),
+            Throws.TypeOf<ObjectDisposedException>());
+    }
+
     private class MailServiceProxy : DispatchProxy
     {
         public IMailService Service { get; private set; } = null!;

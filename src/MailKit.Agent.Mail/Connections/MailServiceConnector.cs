@@ -38,6 +38,7 @@ public sealed class MailServiceConnector
         ArgumentNullException.ThrowIfNull(credential);
 
         var normalizedProtocol = NormalizeProtocol(protocol);
+        var socketOptions = SecureSocketOptionsMapper.Map(endpoint.Tls);
         var service = _serviceFactory(normalizedProtocol);
         var operation = "connect";
         try
@@ -48,7 +49,7 @@ public sealed class MailServiceConnector
                 await service.ConnectAsync(
                     endpoint.Host,
                     endpoint.Port,
-                    SecureSocketOptionsMapper.Map(endpoint.Tls),
+                    socketOptions,
                     connectScope.Token).ConfigureAwait(false);
             }
 
