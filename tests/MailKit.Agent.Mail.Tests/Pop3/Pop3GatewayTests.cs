@@ -195,6 +195,33 @@ public sealed class Pop3GatewayTests
     }
 
     [Test]
+    public void UidlSnapshotDisconnectRemainsSanitizedTransientError()
+    {
+        const string privateMarker = "private-mailbox-text";
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(BuildConversation(
+            count: 1,
+            includeTop: true,
+            includeQuit: false,
+            new Pop3ReplayCommand(
+                "UIDL\r\n", $"+OK {privateMarker}\r\n1 uidl-001\r\n")));
+        var gateway = CreateGateway(session);
+
+        MailOperationException exception = Assert.ThrowsAsync<MailOperationException>(async () =>
+            await gateway.ListMessagesAsync(
+                Profile, credential, 0, 25, CancellationToken.None))!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception.Error.Code, Is.EqualTo("connection.protocol_error"));
+            Assert.That(exception.Error.Category, Is.EqualTo(ErrorCategory.Transient));
+            Assert.That(exception.Error.Message, Does.Not.Contain(privateMarker));
+            Assert.That(exception.Error.Details?.Values, Has.None.Contains(privateMarker));
+        });
+        session.AssertComplete();
+    }
+
+    [Test]
     public void MissingReferencedUidlReturnsStableReferenceConflict()
     {
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");

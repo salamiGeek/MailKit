@@ -211,7 +211,7 @@ public sealed class Pop3Gateway : IPop3Gateway
         {
             throw UidlRequired();
         }
-        catch (Pop3ProtocolException)
+        catch (Pop3ProtocolException) when (client.IsConnected)
         {
             throw UidlConflict();
         }
