@@ -17,6 +17,69 @@ internal interface IAtomicAttachmentFile : IAsyncDisposable
     void Commit();
 }
 
+internal interface ILinuxLinkApi
+{
+    int LinkAt(int oldDirectory, string oldPath, int newDirectory, string newPath, int flags);
+    int GetLastError();
+}
+
+internal sealed class LinuxUnprivilegedFilePublisher
+{
+    private const int AtCurrentWorkingDirectory = -100;
+    private const int AtSymbolicLinkFollow = 0x400;
+    private const int ErrorAlreadyExists = 17;
+    private readonly ILinuxLinkApi api;
+
+    public LinuxUnprivilegedFilePublisher(ILinuxLinkApi api)
+    {
+        this.api = api ?? throw new ArgumentNullException(nameof(api));
+    }
+
+    public void Publish(int openFileDescriptor, int rootDirectoryDescriptor, string destinationName)
+    {
+        string descriptorPath = $"/proc/self/fd/{openFileDescriptor}";
+        if (api.LinkAt(
+            AtCurrentWorkingDirectory,
+            descriptorPath,
+            rootDirectoryDescriptor,
+            destinationName,
+            AtSymbolicLinkFollow) == 0)
+        {
+            return;
+        }
+
+        int error = api.GetLastError();
+        if (error == ErrorAlreadyExists)
+        {
+            throw AttachmentPathPolicy.CreatePolicyError(
+                "attachment.destination_exists",
+                "The attachment destination already exists.");
+        }
+
+        throw new Win32Exception(error);
+    }
+}
+
+internal sealed class NativeLinuxLinkApi : ILinuxLinkApi
+{
+    public int LinkAt(
+        int oldDirectory,
+        string oldPath,
+        int newDirectory,
+        string newPath,
+        int flags) => LinkAtNative(oldDirectory, oldPath, newDirectory, newPath, flags);
+
+    public int GetLastError() => Marshal.GetLastPInvokeError();
+
+    [DllImport("libc", EntryPoint = "linkat", SetLastError = true)]
+    private static extern int LinkAtNative(
+        int oldDirectory,
+        string oldPath,
+        int newDirectory,
+        string newPath,
+        int flags);
+}
+
 internal sealed class AtomicAttachmentFileFactory : IAtomicAttachmentFileFactory, IDisposable
 {
     private readonly AttachmentPathPolicy pathPolicy;
@@ -286,8 +349,6 @@ internal sealed class AtomicAttachmentFileFactory : IAtomicAttachmentFileFactory
 
     private sealed class LinuxAtomicAttachmentFile : IAtomicAttachmentFile
     {
-        private const int AtEmptyPath = 0x1000;
-        private const int ErrorAlreadyExists = 17;
         private const int OpenCloseOnExec = 0x80000;
         private const int OpenDirectory = 0x10000;
         private const int OpenNoFollow = 0x20000;
@@ -298,6 +359,8 @@ internal sealed class AtomicAttachmentFileFactory : IAtomicAttachmentFileFactory
 
         private readonly SafeFileHandle configuredRootHandle;
         private readonly FileStream stream;
+        private readonly LinuxUnprivilegedFilePublisher publisher =
+            new(new NativeLinuxLinkApi());
         private bool committed;
 
         private LinuxAtomicAttachmentFile(
@@ -340,24 +403,10 @@ internal sealed class AtomicAttachmentFileFactory : IAtomicAttachmentFileFactory
                 throw new InvalidOperationException("The attachment file is already committed.");
 
             stream.Flush(flushToDisk: true);
-            int result = LinkAt(
+            publisher.Publish(
                 stream.SafeFileHandle.DangerousGetHandle().ToInt32(),
-                string.Empty,
                 configuredRootHandle.DangerousGetHandle().ToInt32(),
-                Path.GetFileName(DestinationPath),
-                AtEmptyPath);
-            if (result != 0)
-            {
-                int error = Marshal.GetLastPInvokeError();
-                if (error == ErrorAlreadyExists)
-                {
-                    throw AttachmentPathPolicy.CreatePolicyError(
-                        "attachment.destination_exists",
-                        "The attachment destination already exists.");
-                }
-
-                throw new Win32Exception(error);
-            }
+                Path.GetFileName(DestinationPath));
 
             committed = true;
         }
@@ -407,14 +456,6 @@ internal sealed class AtomicAttachmentFileFactory : IAtomicAttachmentFileFactory
 
         [DllImport("libc", EntryPoint = "openat", SetLastError = true)]
         private static extern int OpenAt(int directory, string path, int flags, uint mode);
-
-        [DllImport("libc", EntryPoint = "linkat", SetLastError = true)]
-        private static extern int LinkAt(
-            int oldDirectory,
-            string oldPath,
-            int newDirectory,
-            string newPath,
-            int flags);
 
         [DllImport("libc", EntryPoint = "close", SetLastError = true)]
         private static extern int Close(int fileDescriptor);

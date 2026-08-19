@@ -19,6 +19,7 @@ public sealed class MailStorageRegistrationTests
 
         try
         {
+            Directory.CreateDirectory(uploadRoot);
             Environment.SetEnvironmentVariable("MAILKIT_AGENT_DOWNLOAD_ROOT", downloadRoot);
             Environment.SetEnvironmentVariable("MAILKIT_AGENT_UPLOAD_ROOTS", uploadRoot);
             var services = new ServiceCollection();
