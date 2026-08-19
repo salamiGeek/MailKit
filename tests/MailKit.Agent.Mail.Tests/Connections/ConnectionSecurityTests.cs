@@ -285,6 +285,62 @@ public sealed class ConnectionSecurityTests
     }
 
     [Test]
+    public async Task LateDisconnectFaultRemainsOwnedAndObservedAfterBoundedCleanup()
+    {
+        var disconnectRelease = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Exception? observedLateFailure = null;
+        var cleanupOwner = new FailedServiceCleanupOwner(exception =>
+            observedLateFailure = exception);
+        var proxy = MailServiceProxy.Create();
+        var activeCleanupsWhenDisposed = -1;
+        proxy.AuthenticationFailure = new MailKit.Security.AuthenticationException("private-server-marker");
+        proxy.DisconnectOperation = _ => disconnectRelease.Task;
+        proxy.DisposeOperation = () =>
+            activeCleanupsWhenDisposed = cleanupOwner.ActiveCleanupCount;
+        var connector = new MailServiceConnector(new ConnectionLimits(
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
+            TimeSpan.FromMilliseconds(25), 1, 1), _ => proxy.Service, cleanupOwner);
+        using var credential = PasswordCredentialLease.FromCharacters("test-password".AsSpan());
+        Task<IMailService> operation = connector.ConnectAndAuthenticateAsync(
+            "imap", new EndpointSettings("imap.example.test", 993, TlsMode.ImplicitTls),
+            "user@example.test", credential, CancellationToken.None);
+
+        MailOperationException? primaryException = null;
+        try
+        {
+            primaryException = Assert.ThrowsAsync<MailOperationException>(async () =>
+                await operation.WaitAsync(TimeSpan.FromMilliseconds(500)));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(primaryException!.Error.Code, Is.EqualTo("connection.authentication_failed"));
+                Assert.That(proxy.DisposeCalls, Is.EqualTo(1));
+                Assert.That(activeCleanupsWhenDisposed, Is.EqualTo(1));
+                Assert.That(cleanupOwner.ActiveCleanupCount, Is.EqualTo(1));
+                Assert.That(observedLateFailure, Is.Null);
+            });
+
+            var lateFailure = new InvalidOperationException("private-late-disconnect-marker");
+            disconnectRelease.SetException(lateFailure);
+            await cleanupOwner.WhenIdleAsync().WaitAsync(TimeSpan.FromMilliseconds(500));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(cleanupOwner.ActiveCleanupCount, Is.Zero);
+                Assert.That(observedLateFailure, Is.SameAs(lateFailure));
+                Assert.That(primaryException!.Error.Code, Is.EqualTo("connection.authentication_failed"));
+                Assert.That(primaryException.ToString(), Does.Not.Contain("private-late-disconnect-marker"));
+            });
+        }
+        finally
+        {
+            disconnectRelease.TrySetResult();
+            await cleanupOwner.WhenIdleAsync().WaitAsync(TimeSpan.FromMilliseconds(500));
+        }
+    }
+
+    [Test]
     public void ConnectorRejectsUnknownProtocolWithStableError()
     {
         var connector = new MailServiceConnector();
@@ -349,6 +405,7 @@ public sealed class ConnectionSecurityTests
         public string? Username { get; private set; }
         public Exception? AuthenticationFailure { get; set; }
         public Exception? DisposeFailure { get; set; }
+        public Action? DisposeOperation { get; set; }
         public Func<CancellationToken, Task>? DisconnectOperation { get; set; }
         public CancellationToken DisconnectCancellationToken { get; private set; }
 
@@ -382,6 +439,7 @@ public sealed class ConnectionSecurityTests
                     return DisconnectOperation?.Invoke(cancellationToken) ?? Task.CompletedTask;
                 case nameof(IDisposable.Dispose):
                     DisposeCalls++;
+                    DisposeOperation?.Invoke();
                     if (DisposeFailure is not null)
                         throw DisposeFailure;
                     return null;
