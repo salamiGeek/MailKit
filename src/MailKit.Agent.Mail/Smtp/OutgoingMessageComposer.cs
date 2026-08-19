@@ -62,8 +62,10 @@ public sealed class OutgoingMessageComposer : IOutgoingMessageComposer
         List<MailboxAddress> cc = ParseMailboxes(draft.Cc);
         // Bcc is validated for format only; it is never attached to the message
         // headers because the serialized MIME becomes the DATA payload.
-        ParseMailboxes(draft.Bcc);
-        if (to.Count + cc.Count == 0)
+        List<MailboxAddress> bcc = ParseMailboxes(draft.Bcc);
+        // A Bcc-only draft is deliverable through the SMTP envelope, so blind-copy
+        // recipients alone satisfy "at least one recipient" (mirrors SendApplication).
+        if (to.Count + cc.Count + bcc.Count == 0)
             throw ValidationError(
                 "validation.missing_recipients", "At least one recipient is required.");
 

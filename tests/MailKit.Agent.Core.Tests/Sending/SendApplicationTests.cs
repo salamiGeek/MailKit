@@ -106,6 +106,30 @@ public class SendApplicationTests
     }
 
     [Test]
+    public async Task BccOnlyDraftDeliversThroughTheEnvelope()
+    {
+        // Core counts Bcc as recipients, and the composer accepts Bcc-only drafts;
+        // the envelope must carry the blind-copy recipient while To/Cc stay empty.
+        using var fixture = CreateFixture();
+        var draft = Draft(fixture) with { To = [], Cc = [] };
+
+        ToolResult<SendPreview> prepared = await fixture.Application.PrepareAsync(
+            "personal", draft, "idem-bcc-only", "session-a", CancellationToken.None);
+        Assert.That(prepared.Ok, Is.True, prepared.Error?.Message);
+        await fixture.Application.CommitAsync(
+            prepared.Data!.ConfirmationToken, "session-a", CancellationToken.None);
+
+        PreparedOutgoingMessage sent = fixture.Smtp.LastMessage!;
+        Assert.Multiple(() =>
+        {
+            Assert.That(prepared.Data.To, Is.Empty);
+            Assert.That(prepared.Data.Cc, Is.Empty);
+            Assert.That(prepared.Data.Bcc, Is.EqualTo(new[] { "hidden@example.com" }));
+            Assert.That(sent.EnvelopeRecipients, Is.EqualTo(new[] { "hidden@example.com" }));
+        });
+    }
+
+    [Test]
     public async Task CommitRejectsAlteredToken()
     {
         using var fixture = CreateFixture();
