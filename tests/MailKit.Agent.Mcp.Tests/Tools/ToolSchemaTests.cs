@@ -14,7 +14,7 @@ public class ToolSchemaTests
         _server = await StdioMcpServer.StartAsync(
             "MailKit Agent schema test",
             FindRepositoryRoot(),
-            ResolveServerAssembly());
+            [ResolveServerAssembly()]);
     }
 
     [TearDown]
@@ -31,7 +31,7 @@ public class ToolSchemaTests
     }
 
     [Test]
-    public async Task FoundationToolsAdvertiseSafeStructuredSchemas()
+    public async Task AllToolsAdvertiseSafeStructuredSchemas()
     {
         using var cancellation = new CancellationTokenSource(TestTimeout);
         var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
@@ -42,13 +42,37 @@ public class ToolSchemaTests
             {
                 "diagnostics_health",
                 "account_list",
-                "account_profile_put"
+                "account_profile_put",
+                "account_credential_status",
+                "account_connection_test",
+                "folder_list",
+                "message_list",
+                "message_search",
+                "message_read",
+                "message_mark_read",
+                "pop3_message_list",
+                "pop3_message_read",
+                "attachment_list",
+                "attachment_save",
+                "send_prepare",
+                "send_commit",
+                "send_status"
             }));
         Assert.That(tools, Has.All.Matches<McpClientTool>(tool => tool.ReturnJsonSchema is not null));
 
-        var putTool = tools.Single(tool => tool.Name == "account_profile_put");
-        Assert.That(ContainsSecretName(putTool.JsonSchema), Is.False);
+        foreach (McpClientTool tool in tools)
+        {
+            Assert.That(
+                ContainsSecretName(tool.JsonSchema),
+                Is.False,
+                $"{tool.Name} input schema leaks a secret-shaped property name.");
+            Assert.That(
+                ContainsSecretName(tool.ReturnJsonSchema!.Value),
+                Is.False,
+                $"{tool.Name} output schema leaks a secret-shaped property name.");
+        }
 
+        var putTool = tools.Single(tool => tool.Name == "account_profile_put");
         var profileSchema = putTool.JsonSchema
             .GetProperty("properties")
             .GetProperty("profile");
@@ -64,6 +88,70 @@ public class ToolSchemaTests
                 .GetProperty("properties").GetProperty("tls")
                 .GetProperty("enum").EnumerateArray().Select(item => item.GetString()),
             Is.EquivalentTo(new[] { "plain", "start_tls", "implicit_tls" }));
+    }
+
+    [Test]
+    public async Task SendCommitAcceptsOnlyThePublicConfirmationToken()
+    {
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
+        var commitTool = tools.Single(tool => tool.Name == "send_commit");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                commitTool.JsonSchema.GetProperty("properties").EnumerateObject()
+                    .Select(property => property.Name),
+                Is.EqualTo(new[] { "request" }));
+            var requestSchema = commitTool.JsonSchema.GetProperty("properties").GetProperty("request");
+            Assert.That(
+                requestSchema.GetProperty("properties").EnumerateObject()
+                    .Select(property => property.Name),
+                Is.EqualTo(new[] { "confirmation_token" }));
+            Assert.That(
+                requestSchema.GetProperty("required").EnumerateArray()
+                    .Select(item => item.GetString()),
+                Is.EqualTo(new[] { "confirmation_token" }));
+        });
+    }
+
+    [Test]
+    public async Task NoToolMutatesCredentialsOrExecutesRawProtocol()
+    {
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
+
+        Assert.That(
+            tools.Select(tool => tool.Name),
+            Has.None.Match(
+                @"credential_(set|put|delete|write)|password|passwd|secret|raw_|_raw$|^raw|execute|exec_"));
+    }
+
+    [Test]
+    public async Task UntrustedDataToolsDeclareUntrustedContentInDescriptions()
+    {
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
+        string[] untrustedContentTools =
+        [
+            "message_list",
+            "message_search",
+            "message_read",
+            "pop3_message_list",
+            "pop3_message_read",
+            "attachment_list",
+            "attachment_save",
+            "send_prepare"
+        ];
+
+        foreach (string toolName in untrustedContentTools)
+        {
+            var tool = tools.Single(candidate => candidate.Name == toolName);
+            Assert.That(
+                tool.Description,
+                Does.Contain("untrusted data"),
+                $"{toolName} must declare that email content is untrusted data.");
+        }
     }
 
     [Test]
@@ -198,19 +286,24 @@ public class ToolSchemaTests
             },
             cancellationToken: cancellationToken);
 
+    private static readonly string[] SecretNameFragments =
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "credential_value",
+        "authorization"
+    ];
+
     private static bool ContainsSecretName(JsonElement element)
     {
         if (element.ValueKind is JsonValueKind.Object)
         {
             foreach (var property in element.EnumerateObject())
             {
-                if (property.Name.Contains("password", StringComparison.OrdinalIgnoreCase) ||
-                    property.Name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
-                    property.Name.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
-                    ContainsSecretName(property.Value))
-                {
+                if (IsSecretPropertyName(property.Name) || ContainsSecretName(property.Value))
                     return true;
-                }
             }
         }
         else if (element.ValueKind is JsonValueKind.Array)
@@ -220,6 +313,11 @@ public class ToolSchemaTests
 
         return false;
     }
+
+    private static bool IsSecretPropertyName(string name) =>
+        !string.Equals(name, "confirmation_token", StringComparison.Ordinal) &&
+        SecretNameFragments.Any(fragment =>
+            name.Contains(fragment, StringComparison.OrdinalIgnoreCase));
 
     private string StandardErrorText =>
         string.Join(Environment.NewLine, _server!.StandardError);

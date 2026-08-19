@@ -1,11 +1,16 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using MailKit.Agent.Core.Accounts;
+using MailKit.Agent.Core.Credentials;
 using MailKit.Agent.Core.Errors;
 using MailKit.Agent.Core.Policy;
 using ModelContextProtocol.Server;
 
 namespace MailKit.Agent.Mcp.Tools;
+
+public sealed record AccountIdRequest(
+    [property: JsonPropertyName("account_id")] string AccountId);
 
 [McpServerToolType]
 public sealed class AccountTools
@@ -76,6 +81,52 @@ public sealed class AccountTools
             await store.PutAsync(profile, cancellationToken);
             return success;
         });
+    }
+
+    [McpServerTool(Name = "account_credential_status", UseStructuredContent = true)]
+    [Description(
+        "Reports whether a stored credential exists for one account. Never returns or accepts password values.")]
+    public static async Task<ToolResult<CredentialStatus>> CredentialStatusAsync(
+        [Description("Account ID whose stored credential is inspected.")] AccountIdRequest request,
+        IAccountCredentialVault vault,
+        CancellationToken cancellationToken)
+    {
+        var accountId = request.AccountId;
+        var correlationId = Guid.NewGuid().ToString("N");
+        if (string.IsNullOrWhiteSpace(accountId))
+        {
+            return ToolResult<CredentialStatus>.Failure(
+                new ToolError(
+                    "account.invalid_id",
+                    ErrorCategory.Validation,
+                    "The account ID is invalid.",
+                    false,
+                    null,
+                    null),
+                correlationId);
+        }
+
+        try
+        {
+            CredentialStatus status = await vault.GetStatusAsync(accountId, cancellationToken);
+            return ToolResult<CredentialStatus>.Success(status, correlationId);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return ToolResult<CredentialStatus>.Failure(
+                new ToolError(
+                    "credential.status_failed",
+                    ErrorCategory.Internal,
+                    "The credential status lookup failed.",
+                    false,
+                    null,
+                    null),
+                correlationId);
+        }
     }
 
     private static async Task<ToolResult<T>> ExecuteStoreOperationAsync<T>(
