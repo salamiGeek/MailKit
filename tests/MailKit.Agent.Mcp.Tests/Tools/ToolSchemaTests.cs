@@ -235,7 +235,7 @@ public class ToolSchemaTests
             "bin",
             configuration,
             "net8.0",
-            "MailKit.Agent.Mcp.dll");
+            "mailkit-agent.dll");
     }
 
     private static string FindRepositoryRoot()

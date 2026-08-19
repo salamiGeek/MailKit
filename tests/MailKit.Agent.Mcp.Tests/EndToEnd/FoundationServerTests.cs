@@ -10,20 +10,10 @@ public class FoundationServerTests
     public async Task FoundationToolsRunOverStdioWithIsolatedAccountStorage()
     {
         var repositoryRoot = FindRepositoryRoot();
-        var projectPath = Path.Combine(
-            repositoryRoot,
-            "src",
-            "MailKit.Agent.Mcp",
-            "MailKit.Agent.Mcp.csproj");
         await using var server = await StdioMcpServer.StartAsync(
             "MailKit Agent test",
             repositoryRoot,
-            "run",
-            "--no-build",
-            "--configuration",
-            "Release",
-            "--project",
-            projectPath);
+            ResolveServerAssembly(repositoryRoot));
         using var cancellation = new CancellationTokenSource(TestTimeout);
 
         var health = await server.Client.CallToolAsync(
@@ -51,6 +41,20 @@ public class FoundationServerTests
             Assert.That(accountData.ValueKind, Is.EqualTo(JsonValueKind.Array));
             Assert.That(accountData.GetArrayLength(), Is.Zero);
         });
+    }
+
+    private static string ResolveServerAssembly(string repositoryRoot)
+    {
+        var configuration = new DirectoryInfo(TestContext.CurrentContext.TestDirectory)
+            .Parent?.Name ?? "Debug";
+        return Path.Combine(
+            repositoryRoot,
+            "src",
+            "MailKit.Agent.Mcp",
+            "bin",
+            configuration,
+            "net8.0",
+            "mailkit-agent.dll");
     }
 
     private static string FindRepositoryRoot()
