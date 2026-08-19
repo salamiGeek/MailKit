@@ -10,6 +10,7 @@ namespace MailKit.Agent.Mail.Connections;
 public sealed class MailServiceConnector
 {
     private readonly ConnectionLimits _limits;
+    private readonly FailedServiceCleanupOwner _cleanupOwner;
     private readonly Func<string, IMailService> _serviceFactory;
 
     public MailServiceConnector(ConnectionLimits? limits = null)
@@ -19,10 +20,12 @@ public sealed class MailServiceConnector
 
     internal MailServiceConnector(
         ConnectionLimits limits,
-        Func<string, IMailService> serviceFactory)
+        Func<string, IMailService> serviceFactory,
+        FailedServiceCleanupOwner? cleanupOwner = null)
     {
         _limits = limits ?? throw new ArgumentNullException(nameof(limits));
         _serviceFactory = serviceFactory ?? throw new ArgumentNullException(nameof(serviceFactory));
+        _cleanupOwner = cleanupOwner ?? new FailedServiceCleanupOwner();
     }
 
     public async Task<IMailService> ConnectAndAuthenticateAsync(
@@ -109,20 +112,24 @@ public sealed class MailServiceConnector
             null));
     }
 
-    private static async Task CleanupFailedServiceAsync(
+    private async Task CleanupFailedServiceAsync(
         IMailService service,
         TimeSpan timeout,
         CancellationToken callerCancellationToken)
     {
+        Task? disconnectTask = null;
         try
         {
             using var cleanupScope = CommandTimeoutScope.Create(
                 timeout, callerCancellationToken);
-            Task disconnect = service.DisconnectAsync(false, cleanupScope.Token);
-            await disconnect.WaitAsync(cleanupScope.Token).ConfigureAwait(false);
+            disconnectTask = service.DisconnectAsync(false, cleanupScope.Token);
+            await disconnectTask.WaitAsync(cleanupScope.Token).ConfigureAwait(false);
         }
         catch
         {
+            if (disconnectTask is not null && !disconnectTask.IsCompletedSuccessfully)
+                _cleanupOwner.Own(service, disconnectTask);
+
             // Failure cleanup must not replace the stable operation error.
         }
         finally
