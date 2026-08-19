@@ -17,8 +17,14 @@ public sealed record ComposedOutgoingMessage(
 /// </summary>
 public interface IOutgoingMessageComposer
 {
+    /// <summary>
+    /// Composes a draft into deterministic MIME bytes plus the Message-Id derived
+    /// from <paramref name="idempotencyKey"/> so retries of the same key reproduce
+    /// identical bytes and identity.
+    /// </summary>
     Task<ComposedOutgoingMessage> ComposeAsync(
         AccountProfile profile,
         OutgoingMessageDraft draft,
+        string idempotencyKey,
         CancellationToken cancellationToken);
 }
