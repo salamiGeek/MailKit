@@ -71,14 +71,30 @@ public sealed class Pop3Gateway : IPop3Gateway
             var messages = new List<MessageEnvelope>(pageIndexes.Length);
             foreach (int index in pageIndexes)
             {
-                HeaderList headers;
-                using (var scope = CreateScope(cancellationToken))
+                if ((client.Capabilities & Pop3Capabilities.Top) != 0)
                 {
-                    headers = await client.GetMessageHeadersAsync(index, scope.Token)
-                        .ConfigureAwait(false);
+                    HeaderList headers;
+                    using (var scope = CreateScope(cancellationToken))
+                    {
+                        headers = await client.GetMessageHeadersAsync(index, scope.Token)
+                            .ConfigureAwait(false);
+                    }
+                    messages.Add(ToEnvelope(profile.Id, uidls[index], sizes[index], headers));
                 }
-
-                messages.Add(ToEnvelope(profile.Id, uidls[index], sizes[index], headers));
+                else
+                {
+                    MimeMessage message;
+                    using (var scope = CreateScope(cancellationToken))
+                    {
+                        message = await client.GetMessageAsync(index, scope.Token)
+                            .ConfigureAwait(false);
+                    }
+                    using (message)
+                    {
+                        messages.Add(ToEnvelope(
+                            profile.Id, uidls[index], sizes[index], message.Headers));
+                    }
+                }
             }
 
             int? nextOffset = offset + pageIndexes.Length < uidls.Count
@@ -194,6 +210,10 @@ public sealed class Pop3Gateway : IPop3Gateway
         catch (Pop3CommandException)
         {
             throw UidlRequired();
+        }
+        catch (Pop3ProtocolException)
+        {
+            throw UidlConflict();
         }
 
         if (uidls.Count != client.Count ||
