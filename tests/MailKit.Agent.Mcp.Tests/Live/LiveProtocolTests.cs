@@ -133,7 +133,7 @@ public sealed class LiveProtocolTests
 
 		var envelopes = await CollectPagesAsync(
 			client, "message_list",
-			Request(("account_id", settings.AccountId), ("folder_id", inboxId!)),
+			Fields(("account_id", settings.AccountId), ("folder_id", inboxId!)),
 			"messages", cancellation.Token);
 		PrintEnvelopes("IMAP", envelopes);
 		Dictionary<string, object?>? imapReference = null;
@@ -170,7 +170,7 @@ public sealed class LiveProtocolTests
 		// 4. pop3_message_list and pop3_message_read.
 		var pop3Envelopes = await CollectPagesAsync(
 			client, "pop3_message_list",
-			Request(("account_id", settings.AccountId)),
+			Fields(("account_id", settings.AccountId)),
 			"messages", cancellation.Token);
 		PrintEnvelopes("POP3", pop3Envelopes);
 		if (settings.Pop3Uidl is not null)
@@ -343,13 +343,16 @@ public sealed class LiveProtocolTests
 		AssertNoServerCrash(server);
 	}
 
-	private static Dictionary<string, object?> Request(params (string Key, object? Value)[] fields)
+	private static Dictionary<string, object?> Fields(params (string Key, object? Value)[] fields)
 	{
 		var request = new Dictionary<string, object?>();
 		foreach (var (key, value) in fields)
 			request[key] = value;
-		return new Dictionary<string, object?> { ["request"] = request };
+		return request;
 	}
+
+	private static Dictionary<string, object?> Request(params (string Key, object? Value)[] fields) =>
+		new() { ["request"] = Fields(fields) };
 
 	private static Dictionary<string, object?> Endpoint(string host, int port, string tls) =>
 		new()
