@@ -100,6 +100,7 @@ public class JsonSendLedgerTests
     [TestCase(SendState.Succeeded)]
     [TestCase(SendState.Failed)]
     [TestCase(SendState.Indeterminate)]
+    [TestCase(SendState.Drafted)]
     public async Task AttemptingTransitionsToTerminalStates(SendState terminal)
     {
         using var temp = new TemporaryDirectory();
@@ -121,6 +122,7 @@ public class JsonSendLedgerTests
     [TestCase(SendState.Prepared, SendState.Succeeded)]
     [TestCase(SendState.Prepared, SendState.Failed)]
     [TestCase(SendState.Prepared, SendState.Indeterminate)]
+    [TestCase(SendState.Prepared, SendState.Drafted)]
     [TestCase(SendState.Prepared, SendState.Prepared)]
     [TestCase(SendState.Attempting, SendState.Prepared)]
     [TestCase(SendState.Attempting, SendState.Attempting)]
@@ -131,6 +133,11 @@ public class JsonSendLedgerTests
     [TestCase(SendState.Failed, SendState.Succeeded)]
     [TestCase(SendState.Indeterminate, SendState.Attempting)]
     [TestCase(SendState.Indeterminate, SendState.Succeeded)]
+    [TestCase(SendState.Drafted, SendState.Attempting)]
+    [TestCase(SendState.Drafted, SendState.Succeeded)]
+    [TestCase(SendState.Drafted, SendState.Failed)]
+    [TestCase(SendState.Drafted, SendState.Indeterminate)]
+    [TestCase(SendState.Drafted, SendState.Prepared)]
     public async Task TransitionRejectsDisallowedPaths(SendState start, SendState target)
     {
         using var temp = new TemporaryDirectory();
@@ -139,7 +146,7 @@ public class JsonSendLedgerTests
         if (start != SendState.Prepared)
             await ledger.TransitionAsync(
                 AccountId, KeyHash, SendState.Attempting, Now.AddSeconds(5), "corr-1", CancellationToken.None);
-        if (start is SendState.Succeeded or SendState.Failed or SendState.Indeterminate)
+        if (start is SendState.Succeeded or SendState.Failed or SendState.Indeterminate or SendState.Drafted)
             await ledger.TransitionAsync(
                 AccountId, KeyHash, start, Now.AddSeconds(10), "corr-1", CancellationToken.None);
 
@@ -156,6 +163,32 @@ public class JsonSendLedgerTests
         Assert.ThrowsAsync<InvalidOperationException>(() =>
             ledger.TransitionAsync(
                 AccountId, KeyHash, SendState.Attempting, Now, "corr-1", CancellationToken.None));
+    }
+
+    [Test]
+    public async Task DraftedIsTerminalAndSerializesAsDrafted()
+    {
+        using var temp = new TemporaryDirectory();
+        var ledger = new JsonSendLedger(temp.Path);
+        await ledger.CreateAsync(PreparedEntry(), CancellationToken.None);
+        await ledger.TransitionAsync(
+            AccountId, KeyHash, SendState.Attempting, Now.AddSeconds(5), "corr-1", CancellationToken.None);
+        var drafted = await ledger.TransitionAsync(
+            AccountId, KeyHash, SendState.Drafted, Now.AddSeconds(10), "corr-1", CancellationToken.None);
+
+        var path = Path.Combine(temp.Path, "send-ledger", AccountId, KeyHash + ".json");
+        var json = await File.ReadAllTextAsync(path);
+        var found = await ledger.FindAsync(AccountId, KeyHash, CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(drafted.State, Is.EqualTo(SendState.Drafted));
+            Assert.That(json, Does.Contain("\"state\":\"drafted\""));
+            Assert.That(found!.State, Is.EqualTo(SendState.Drafted));
+            Assert.ThrowsAsync<InvalidOperationException>(() => ledger.TransitionAsync(
+                AccountId, KeyHash, SendState.Attempting, Now.AddSeconds(15), "corr-1", CancellationToken.None));
+            Assert.ThrowsAsync<InvalidOperationException>(() => ledger.CreateAsync(
+                PreparedEntry(), CancellationToken.None));
+        });
     }
 
     [Test]

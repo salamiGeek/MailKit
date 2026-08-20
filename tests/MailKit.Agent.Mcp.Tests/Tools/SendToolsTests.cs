@@ -205,6 +205,75 @@ public class SendToolsTests
         });
     }
 
+    [Test]
+    public async Task DraftsModeSavesToTheDraftStoreWithoutApprovalOrDelivery()
+    {
+        string dataDirectory = Path.Combine(
+            Path.GetTempPath(), "mailkit-agent-send-tools-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dataDirectory);
+        var store = new ConnectionToolsTests.InMemoryStore();
+        store.PutAsync(
+            ConnectionToolsTests.CreateProfile(AccountId) with
+            {
+                SendMode = SendMode.Drafts,
+                Smtp = null
+            },
+            CancellationToken.None).GetAwaiter().GetResult();
+        var composer = new RecordingComposer();
+        var smtp = new CountingSmtpGateway();
+        var approver = new RecordingSendApprover();
+        var draftStore = new RecordingDraftStore();
+        var application = new SendApplication(
+            store,
+            new ConnectionToolsTests.FakeVault(),
+            composer,
+            smtp,
+            draftStore,
+            new HmacSendConfirmationCodec(
+                System.Security.Cryptography.RandomNumberGenerator.GetBytes(32),
+                TimeProvider.System),
+            new MemoryPreparedSendStore(),
+            new JsonSendLedger(dataDirectory),
+            approver,
+            OperationPolicy.Default,
+            MailSafetyLimits.Default,
+            TimeProvider.System,
+            mailFileOptions: new MailFileOptions(
+                Path.Combine(dataDirectory, "downloads"),
+                Array.Empty<string>()));
+        var identity = new StdioSessionIdentity();
+        try
+        {
+            var prepared = await SendTools.PrepareAsync(
+                PrepareRequest(), server: null, identity, application, CancellationToken.None);
+            Assert.That(prepared.Ok, Is.True, prepared.Error?.Message);
+
+            var committed = await SendTools.CommitAsync(
+                new SendCommitRequest(prepared.Data!.ConfirmationToken),
+                server: null,
+                identity,
+                application,
+                CancellationToken.None);
+            Assert.Multiple(() =>
+            {
+                Assert.That(committed.Ok, Is.True, committed.Error?.Message);
+                Assert.That(committed.Data!.State, Is.EqualTo(SendState.Drafted));
+                Assert.That(prepared.Data.SendMode, Is.EqualTo(SendMode.Drafts));
+                Assert.That(draftStore.Saves, Has.Count.EqualTo(1));
+                Assert.That(smtp.SendCount, Is.Zero);
+                Assert.That(approver.Approvals, Is.Empty,
+                    "Nothing is delivered in drafts mode, so the approval dialog is skipped.");
+                var serialized = JsonSerializer.Serialize(prepared.Data);
+                Assert.That(serialized, Does.Contain("\"send_mode\":\"drafts\""));
+            });
+        }
+        finally
+        {
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
     private static string DecodeConfirmationTokenPayload(string token)
     {
         string[] parts = token.Split('.');
@@ -252,6 +321,7 @@ public class SendToolsTests
             new ConnectionToolsTests.FakeVault(),
             composer,
             smtp,
+            new RecordingDraftStore(),
             new HmacSendConfirmationCodec(
                 System.Security.Cryptography.RandomNumberGenerator.GetBytes(32),
                 TimeProvider.System),
@@ -330,6 +400,21 @@ public class SendToolsTests
             CancellationToken cancellationToken)
         {
             SendCount++;
+            return Task.FromResult(SendTransportOutcome.Succeeded());
+        }
+    }
+
+    private sealed class RecordingDraftStore : IDraftMessageStore
+    {
+        public List<PreparedOutgoingMessage> Saves { get; } = [];
+
+        public Task<SendTransportOutcome> SaveAsync(
+            AccountProfile profile,
+            PasswordCredentialLease credential,
+            PreparedOutgoingMessage message,
+            CancellationToken cancellationToken)
+        {
+            Saves.Add(message);
             return Task.FromResult(SendTransportOutcome.Succeeded());
         }
     }

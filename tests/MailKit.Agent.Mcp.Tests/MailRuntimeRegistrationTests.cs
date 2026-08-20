@@ -35,6 +35,7 @@ public sealed class MailRuntimeRegistrationTests
 			var imap = (ImapGateway)provider.GetRequiredService<IImapGateway>();
 			var pop3 = (Pop3Gateway)provider.GetRequiredService<IPop3Gateway>();
 			var smtp = (SmtpGateway)provider.GetRequiredService<ISmtpGateway>();
+			var draftStore = (ImapDraftStore)provider.GetRequiredService<IDraftMessageStore>();
 
 			Assert.Multiple(() =>
 			{
@@ -44,6 +45,8 @@ public sealed class MailRuntimeRegistrationTests
 					"Pop3Gateway must acquire through the registered gate singleton.");
 				Assert.That(GateOf(smtp), Is.SameAs(gate),
 					"SmtpGateway must acquire through the registered gate singleton.");
+				Assert.That(GateOf(draftStore), Is.SameAs(gate),
+					"ImapDraftStore must acquire through the registered gate singleton.");
 			});
 		}
 		finally
@@ -103,6 +106,41 @@ public sealed class MailRuntimeRegistrationTests
 		}
 	}
 
+	[Test]
+	public void ProductionWiringRegistersTheImapDraftStoreForSendApplication()
+	{
+		// The drafts send mode must reach the real IMAP-backed store in production:
+		// a missing registration would make drafts-mode commits unresolvable, and a
+		// fake would silently skip the actual Drafts-folder append.
+		string dataDirectory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+		try
+		{
+			var services = new ServiceCollection();
+			services.AddSingleton<IAccountProfileStore>(_ => new JsonAccountProfileStore(dataDirectory));
+			services.AddSingleton<IAccountCredentialVault, UnusedCredentialVault>();
+			services.AddSingleton(OperationPolicy.Default);
+			services.AddSingleton(TimeProvider.System);
+			McpServerHost.ConfigureMailStorage(services, dataDirectory);
+			McpServerHost.ConfigureMailRuntime(services, dataDirectory);
+			using ServiceProvider provider = services.BuildServiceProvider();
+
+			IDraftMessageStore draftStore = provider.GetRequiredService<IDraftMessageStore>();
+			SendApplication application = provider.GetRequiredService<SendApplication>();
+
+			Assert.Multiple(() =>
+			{
+				Assert.That(draftStore, Is.InstanceOf<ImapDraftStore>());
+				Assert.That(DraftStoreOf(application), Is.SameAs(draftStore),
+					"SendApplication must consume the registered draft store singleton.");
+			});
+		}
+		finally
+		{
+			if (Directory.Exists(dataDirectory))
+				Directory.Delete(dataDirectory, recursive: true);
+		}
+	}
+
 	private sealed class UnusedCredentialVault : IAccountCredentialVault
 	{
 		public ValueTask<CredentialStatus> GetStatusAsync(
@@ -133,5 +171,10 @@ public sealed class MailRuntimeRegistrationTests
 	private static ISendCommitApprover ApproverOf(SendApplication application) =>
 		(ISendCommitApprover)application.GetType()
 			.GetField("sendApprover", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.GetValue(application)!;
+
+	private static IDraftMessageStore DraftStoreOf(SendApplication application) =>
+		(IDraftMessageStore)application.GetType()
+			.GetField("draftStore", BindingFlags.Instance | BindingFlags.NonPublic)!
 			.GetValue(application)!;
 }

@@ -284,8 +284,147 @@ public class FoundationServerTests
         });
     }
 
-    [Test]
-    public async Task PublishedReleaseOutputRejectsTestMode()
+	[Test]
+	public async Task DraftsModeSavesDraftsOverStdioWithoutDelivery()
+	{
+#if !DEBUG
+		// The fake draft store is compiled into the server only in DEBUG builds and
+		// the Release server rejects MAILKIT_AGENT_TEST_MODE by design, so this e2e
+		// runs only against a Debug server build (same trade-off as the fixture e2e).
+		Assert.Ignore("fake draft store requires a Debug server build; MAILKIT_AGENT_TEST_MODE is rejected by Release builds");
+#endif
+		var repositoryRoot = FindRepositoryRoot();
+        await using var server = await StdioMcpServer.StartAsync(
+            "MailKit Agent drafts test",
+            repositoryRoot,
+            [ResolveServerAssembly(repositoryRoot)],
+            testFixtures: ["credential", "drafts"]);
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        const string accountId = "e2e-drafts";
+
+        var put = await server.Client.CallToolAsync(
+            "account_profile_put",
+            new Dictionary<string, object?>
+            {
+                ["profile"] = new Dictionary<string, object?>
+                {
+                    ["id"] = accountId,
+                    ["display_name"] = "Drafts Account",
+                    ["username"] = "drafts@example.test",
+                    ["authentication"] = "password",
+                    ["send_mode"] = "drafts",
+                    ["imap"] = Endpoint("imap.example.test", 993),
+                    ["pop3"] = null,
+                    ["smtp"] = null
+                }
+            },
+            cancellationToken: cancellation.Token);
+        Assert.That(put.StructuredContent!.Value.GetProperty("ok").GetBoolean(), Is.True);
+        Assert.That(
+            put.StructuredContent.Value.GetProperty("data").GetProperty("send_mode").GetString(),
+            Is.EqualTo("drafts"));
+
+        var prepared = await server.Client.CallToolAsync(
+            "send_prepare",
+            new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+            {
+                ["account_id"] = accountId,
+                ["draft"] = new Dictionary<string, object?>
+                {
+                    ["to"] = new object[] { new Dictionary<string, object?>
+                    {
+                        ["address"] = "recipient@example.test"
+                    } },
+                    ["subject"] = "Fixture drafts e2e",
+                    ["text_body"] = "Fixture drafts body."
+                },
+                ["idempotency_key"] = "e2e-drafts-key-1"
+            } },
+            cancellationToken: cancellation.Token);
+        var preview = prepared.StructuredContent!.Value.GetProperty("data");
+        string confirmationToken = preview.GetProperty("confirmation_token").GetString()!;
+        Assert.Multiple(() =>
+        {
+            Assert.That(confirmationToken, Is.Not.Null.And.Not.Empty);
+            Assert.That(
+                preview.GetProperty("send_mode").GetString(),
+                Is.EqualTo("drafts"),
+                "The preview must announce the drafts execution mode.");
+        });
+
+        var committed = await server.Client.CallToolAsync(
+            "send_commit",
+            new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+            {
+                ["confirmation_token"] = confirmationToken
+            } },
+            cancellationToken: cancellation.Token);
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                committed.StructuredContent!.Value.GetProperty("ok").GetBoolean(),
+                Is.True);
+            Assert.That(
+                committed.StructuredContent.Value.GetProperty("data")
+                    .GetProperty("state").GetString(),
+                Is.EqualTo("drafted"));
+        });
+
+        var repeatedCommit = await server.Client.CallToolAsync(
+            "send_commit",
+            new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+            {
+                ["confirmation_token"] = confirmationToken
+            } },
+            cancellationToken: cancellation.Token);
+        Assert.That(
+            repeatedCommit.StructuredContent!.Value.GetProperty("ok").GetBoolean(),
+            Is.False,
+            "The one-time token must never save the same draft twice.");
+
+        var status = await server.Client.CallToolAsync(
+            "send_status",
+            new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+            {
+                ["account_id"] = accountId,
+                ["idempotency_key"] = "e2e-drafts-key-1"
+            } },
+            cancellationToken: cancellation.Token);
+        Assert.That(
+            status.StructuredContent!.Value.GetProperty("data")
+                .GetProperty("state").GetString(),
+            Is.EqualTo("drafted"));
+
+        string draftLogPath = Path.Combine(
+            server.DataDirectory, "test-fixtures", "draft-saves.jsonl");
+        string smtpLogPath = Path.Combine(
+            server.DataDirectory, "test-fixtures", "smtp-deliveries.jsonl");
+        string[] saves = File.ReadAllLines(draftLogPath);
+        Assert.Multiple(() =>
+        {
+            Assert.That(saves.Length, Is.EqualTo(1),
+                "A repeated commit must never save a second draft.");
+            using var record = JsonDocument.Parse(saves[0]);
+            Assert.That(
+                record.RootElement.GetProperty("account_id").GetString(),
+                Is.EqualTo(accountId));
+            byte[] mime = Convert.FromBase64String(
+                record.RootElement.GetProperty("mime_base64").GetString()!);
+            string mimeText = System.Text.Encoding.UTF8.GetString(mime);
+            Assert.That(mimeText, Does.Contain("To: recipient@example.test"));
+            Assert.That(mimeText, Does.Contain("Subject: Fixture drafts e2e"));
+            Assert.That(mimeText, Does.Not.Contain("Bcc:"),
+                "Drafts carry To/Cc only, exactly as composed.");
+            Assert.That(File.Exists(smtpLogPath), Is.False,
+                "The drafts mode must never deliver over SMTP.");
+            var standardError = string.Join(Environment.NewLine, server.StandardError);
+            Assert.That(standardError, Does.Not.Contain("fixture-password"));
+            Assert.That(standardError, Does.Not.Contain("Exception"));
+        });
+	}
+
+	[Test]
+	public async Task PublishedReleaseOutputRejectsTestMode()
     {
         var repositoryRoot = FindRepositoryRoot();
         var publishRoot = Path.Combine(

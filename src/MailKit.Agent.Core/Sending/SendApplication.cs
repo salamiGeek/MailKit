@@ -14,16 +14,20 @@ namespace MailKit.Agent.Core.Sending;
 /// <summary>
 /// Protocol-agnostic two-phase send workflow. <see cref="PrepareAsync"/> validates a
 /// draft, composes MIME once, and stores an in-memory preparation with an HMAC
-/// confirmation token without acquiring credentials or an SMTP connection.
+/// confirmation token without acquiring credentials or a transport connection.
 /// <see cref="CommitAsync"/> first validates the one-time token cheaply (expiry,
-/// session, account, content hash), then requires a local human approval from
-/// <see cref="ISendCommitApprover"/> — a factor the MCP caller cannot produce on
-/// its own — BEFORE consuming the token: a declined, unavailable, or cancelled
-/// approval leaves the preparation intact for a later approved commit. Once
-/// approved, the commit consumes the token, writes the ledger
-/// <see cref="SendState.Attempting"/> record before any network I/O, acquires a
-/// fresh password lease, invokes SMTP exactly once, persists the returned
-/// terminal state, and disposes secrets and MIME bytes.
+/// session, account, content hash), then branches on the account's send mode
+/// resolved from the account store: <see cref="SendMode.ConfirmDialog"/> requires a
+/// local human approval from <see cref="ISendCommitApprover"/> — a factor the MCP
+/// caller cannot produce on its own — BEFORE consuming the token, while
+/// <see cref="SendMode.Drafts"/> skips the approver entirely (nothing is delivered;
+/// delivery is the human's manual act from their own mail client) and appends the
+/// prepared message to the account's Drafts folder through
+/// <see cref="IDraftMessageStore"/>. In both modes the commit consumes the token,
+/// writes the ledger <see cref="SendState.Attempting"/> record before any network
+/// I/O, acquires a fresh password lease, invokes the transport exactly once, persists
+/// the returned terminal state (<see cref="SendState.Drafted"/> for a saved draft),
+/// and disposes secrets and MIME bytes.
 /// </summary>
 public sealed class SendApplication
 {
@@ -44,6 +48,7 @@ public sealed class SendApplication
     private readonly IAccountCredentialVault credentialVault;
     private readonly IOutgoingMessageComposer composer;
     private readonly ISmtpGateway smtpGateway;
+    private readonly IDraftMessageStore draftStore;
     private readonly ISendConfirmationCodec confirmationCodec;
     private readonly IPreparedSendStore preparedStore;
     private readonly ISendLedger sendLedger;
@@ -59,6 +64,7 @@ public sealed class SendApplication
         IAccountCredentialVault credentialVault,
         IOutgoingMessageComposer composer,
         ISmtpGateway smtpGateway,
+        IDraftMessageStore draftStore,
         ISendConfirmationCodec confirmationCodec,
         IPreparedSendStore preparedStore,
         ISendLedger sendLedger,
@@ -73,6 +79,7 @@ public sealed class SendApplication
         this.credentialVault = credentialVault ?? throw new ArgumentNullException(nameof(credentialVault));
         this.composer = composer ?? throw new ArgumentNullException(nameof(composer));
         this.smtpGateway = smtpGateway ?? throw new ArgumentNullException(nameof(smtpGateway));
+        this.draftStore = draftStore ?? throw new ArgumentNullException(nameof(draftStore));
         this.confirmationCodec = confirmationCodec ?? throw new ArgumentNullException(nameof(confirmationCodec));
         this.preparedStore = preparedStore ?? throw new ArgumentNullException(nameof(preparedStore));
         this.sendLedger = sendLedger ?? throw new ArgumentNullException(nameof(sendLedger));
@@ -147,7 +154,19 @@ public sealed class SendApplication
                     "The stored account profile is invalid.", correlationId);
             }
 
-            if (profile.Smtp is null)
+            if (profile.SendMode == SendMode.Drafts)
+            {
+                // Drafts-mode commits IMAP-APPEND to the Drafts folder, so IMAP must
+                // be configured; the mode never delivers, so SMTP is not required.
+                if (profile.Imap is null)
+                {
+                    return AccountOperationBoundary.Failure<SendPreview>(
+                        "imap.not_configured", ErrorCategory.Capability,
+                        "IMAP is not configured for this account.", correlationId,
+                        new Dictionary<string, string> { ["protocol"] = "imap" });
+                }
+            }
+            else if (profile.Smtp is null)
             {
                 return AccountOperationBoundary.Failure<SendPreview>(
                     "smtp.not_configured", ErrorCategory.Capability,
@@ -178,6 +197,7 @@ public sealed class SendApplication
                 Display(draft.To),
                 Display(draft.Cc),
                 Display(draft.Bcc),
+                profile.SendMode,
                 draft.Subject,
                 PreviewText(draft.TextBody),
                 draft.AttachmentPaths?.Count ?? 0,
@@ -268,8 +288,9 @@ public sealed class SendApplication
         }
 
         // Peek the preparation WITHOUT consuming it: the local human-approval gate
-        // below must see the exact preview first, and a declined approval keeps the
-        // one-time token intact for a later approved commit (bounded by the TTL).
+        // (confirm_dialog mode only) must see the exact preview first, and a declined
+        // approval keeps the one-time token intact for a later approved commit
+        // (bounded by the TTL).
         PreparedOutgoingMessage? peeked = await preparedStore.TryGetAsync(
             payload.PreparationId, cancellationToken).ConfigureAwait(false);
         if (peeked is null)
@@ -288,42 +309,80 @@ public sealed class SendApplication
                 "The send confirmation does not match the prepared message.", correlationId);
         }
 
-        SendApprovalOutcome approval;
-        try
-        {
-            approval = await sendApprover.ApproveAsync(peeked.Preview, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // Cancellation while waiting for approval follows normal cancellation
-            // semantics: no ledger write, no token consumption, no SMTP.
-            throw;
-        }
-        catch (Exception)
+        // The execution branch is decided by the account's CURRENT send mode (the
+        // same store every other commit-time account fact comes from), not by a
+        // snapshot taken at prepare time.
+        AccountProfile? profile = await accountStore.GetAsync(
+            payload.AccountId, cancellationToken).ConfigureAwait(false);
+        if (profile is null)
         {
             return AccountOperationBoundary.Failure<SendStatus>(
-                "mail.operation_failed", ErrorCategory.Internal,
-                "The send commit failed.", correlationId);
+                "account.not_found", ErrorCategory.Validation,
+                "The account was not found.", correlationId);
         }
 
-        if (approval != SendApprovalOutcome.Approved)
+        if (!string.Equals(profile.Id, payload.AccountId, StringComparison.Ordinal) ||
+            AccountProfileValidator.Validate(profile).Count != 0)
         {
-            // Both non-approved outcomes keep the one-time token and the ledger
-            // untouched; only the stable error differs so operators can tell an
-            // environment problem (run interactively) from a human refusal.
-            return approval == SendApprovalOutcome.Unavailable
-                ? ToolResult<SendStatus>.Failure(new ToolError(
-                    "send.approval_unavailable",
-                    ErrorCategory.Capability,
-                    "Local human approval is unavailable in this environment.",
-                    false,
-                    null,
-                    null), correlationId)
-                : ValidationFailure<SendStatus>(
-                    "send.approval_declined",
-                    "The send was not approved locally.",
-                    correlationId);
+            return AccountOperationBoundary.Failure<SendStatus>(
+                "account.invalid_profile", ErrorCategory.Validation,
+                "The stored account profile is invalid.", correlationId);
+        }
+
+        bool draftsMode = profile.SendMode == SendMode.Drafts;
+        if (draftsMode && profile.Imap is null)
+        {
+            return AccountOperationBoundary.Failure<SendStatus>(
+                "imap.not_configured", ErrorCategory.Capability,
+                "IMAP is not configured for this account.", correlationId,
+                new Dictionary<string, string> { ["protocol"] = "imap" });
+        }
+        if (!draftsMode && profile.Smtp is null)
+        {
+            return AccountOperationBoundary.Failure<SendStatus>(
+                "smtp.not_configured", ErrorCategory.Capability,
+                "SMTP is not configured for this account.", correlationId);
+        }
+
+        if (!draftsMode)
+        {
+            SendApprovalOutcome approval;
+            try
+            {
+                approval = await sendApprover.ApproveAsync(peeked.Preview, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation while waiting for approval follows normal cancellation
+                // semantics: no ledger write, no token consumption, no SMTP.
+                throw;
+            }
+            catch (Exception)
+            {
+                return AccountOperationBoundary.Failure<SendStatus>(
+                    "mail.operation_failed", ErrorCategory.Internal,
+                    "The send commit failed.", correlationId);
+            }
+
+            if (approval != SendApprovalOutcome.Approved)
+            {
+                // Both non-approved outcomes keep the one-time token and the ledger
+                // untouched; only the stable error differs so operators can tell an
+                // environment problem (run interactively) from a human refusal.
+                return approval == SendApprovalOutcome.Unavailable
+                    ? ToolResult<SendStatus>.Failure(new ToolError(
+                        "send.approval_unavailable",
+                        ErrorCategory.Capability,
+                        "Local human approval is unavailable in this environment.",
+                        false,
+                        null,
+                        null), correlationId)
+                    : ValidationFailure<SendStatus>(
+                        "send.approval_declined",
+                        "The send was not approved locally.",
+                        correlationId);
+            }
         }
 
         PreparedOutgoingMessage? message = await preparedStore.TakeAsync(
@@ -353,30 +412,6 @@ public sealed class SendApplication
                 0));
             if (!initialDecision.Allowed)
                 return ToolResult<SendStatus>.Failure(initialDecision.Error!, correlationId);
-
-            AccountProfile? profile = await accountStore.GetAsync(
-                payload.AccountId, cancellationToken).ConfigureAwait(false);
-            if (profile is null)
-            {
-                return AccountOperationBoundary.Failure<SendStatus>(
-                    "account.not_found", ErrorCategory.Validation,
-                    "The account was not found.", correlationId);
-            }
-
-            if (!string.Equals(profile.Id, payload.AccountId, StringComparison.Ordinal) ||
-                AccountProfileValidator.Validate(profile).Count != 0)
-            {
-                return AccountOperationBoundary.Failure<SendStatus>(
-                    "account.invalid_profile", ErrorCategory.Validation,
-                    "The stored account profile is invalid.", correlationId);
-            }
-
-            if (profile.Smtp is null)
-            {
-                return AccountOperationBoundary.Failure<SendStatus>(
-                    "smtp.not_configured", ErrorCategory.Capability,
-                    "SMTP is not configured for this account.", correlationId);
-            }
 
             SendLedgerEntry? existing = await sendLedger.FindAsync(
                 payload.AccountId, payload.IdempotencyKeyHash, cancellationToken).ConfigureAwait(false);
@@ -410,17 +445,26 @@ public sealed class SendApplication
 
                 lease = await credentialVault.GetPasswordAsync(
                     payload.AccountId, cancellationToken).ConfigureAwait(false);
-                SendTransportOutcome outcome = await smtpGateway.SendAsync(
-                    profile, lease, message, cancellationToken).ConfigureAwait(false);
+                // The drafts mode never delivers: its "transport" is the Drafts-folder
+                // append, so the local approval dialog is skipped above and the
+                // terminal success state becomes Drafted instead of Succeeded.
+                SendTransportOutcome outcome = draftsMode
+                    ? await draftStore.SaveAsync(profile, lease, message, cancellationToken)
+                        .ConfigureAwait(false)
+                    : await smtpGateway.SendAsync(profile, lease, message, cancellationToken)
+                        .ConfigureAwait(false);
+                SendState terminalState = draftsMode && outcome.State == SendState.Succeeded
+                    ? SendState.Drafted
+                    : outcome.State;
 
                 SendLedgerEntry updated = await TransitionTerminalAsync(
-                    payload, outcome.State, correlationId, cancellationToken).ConfigureAwait(false);
-                result = outcome.State switch
+                    payload, terminalState, correlationId, cancellationToken).ConfigureAwait(false);
+                result = terminalState switch
                 {
-                    SendState.Succeeded =>
+                    SendState.Succeeded or SendState.Drafted =>
                         ToolResult<SendStatus>.Success(ToStatus(updated), correlationId),
                     SendState.Failed => ToolResult<SendStatus>.Failure(
-                        outcome.Error ?? DefaultFailure(), correlationId),
+                        outcome.Error ?? (draftsMode ? DraftsFailure() : DefaultFailure()), correlationId),
                     _ => ToolResult<SendStatus>.Failure(
                         outcome.Error ?? IndeterminateError(), correlationId)
                 };
@@ -534,7 +578,7 @@ public sealed class SendApplication
         string correlationId,
         CancellationToken cancellationToken)
     {
-        if (state is not (SendState.Succeeded or SendState.Failed or SendState.Indeterminate))
+        if (state is not (SendState.Succeeded or SendState.Failed or SendState.Indeterminate or SendState.Drafted))
             throw new ArgumentOutOfRangeException(nameof(state));
 
         return await sendLedger.TransitionAsync(
@@ -786,6 +830,14 @@ public sealed class SendApplication
         "send.failed",
         ErrorCategory.Transient,
         "The message was rejected by the SMTP server.",
+        false,
+        null,
+        null);
+
+    private static ToolError DraftsFailure() => new(
+        "drafts.save_failed",
+        ErrorCategory.Transient,
+        "The message could not be saved to the Drafts folder.",
         false,
         null,
         null);

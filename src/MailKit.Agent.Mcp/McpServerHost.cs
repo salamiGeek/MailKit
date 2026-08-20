@@ -66,6 +66,7 @@ public static class McpServerHost
 		};
 		toolSerializerOptions.Converters.Add(new LowerSnakeCaseEnumConverter<AuthenticationKind>());
 		toolSerializerOptions.Converters.Add(new LowerSnakeCaseEnumConverter<TlsMode>());
+		toolSerializerOptions.Converters.Add(new LowerSnakeCaseEnumConverter<SendMode>());
 		builder.Services.AddSingleton<IAccountProfileStore>(
 			_ => new JsonAccountProfileStore(dataDirectory));
 		builder.Services.AddSingleton(vault);
@@ -132,6 +133,7 @@ public static class McpServerHost
 		services.AddSingleton<IImapGateway, ImapGateway>();
 		services.AddSingleton<IPop3Gateway, Pop3Gateway>();
 		services.AddSingleton<ISmtpGateway, SmtpGateway>();
+		services.AddSingleton<IDraftMessageStore, ImapDraftStore>();
 		services.AddSingleton<IOutgoingMessageComposer>(serviceProvider =>
 			new OutgoingMessageComposer(
 				serviceProvider.GetRequiredService<MailFileOptions>(),

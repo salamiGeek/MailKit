@@ -86,6 +86,7 @@ internal static class ProtocolExceptionMapper
         "send_prepare" => "send_prepare",
         "send_commit" => "send_commit",
         "send_status" => "send_status",
+        "drafts_save" => "drafts_save",
         _ => "unknown"
     };
 

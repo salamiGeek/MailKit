@@ -19,6 +19,23 @@ public class LowerSnakeCaseEnumConverterTests
     }
 
     [Test]
+    public void RoundTripsSendModeValuesAsLowerSnakeCaseStrings()
+    {
+        var confirmJson = JsonSerializer.Serialize(SendMode.ConfirmDialog);
+        var draftsJson = JsonSerializer.Serialize(SendMode.Drafts);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(confirmJson, Is.EqualTo("\"confirm_dialog\""));
+            Assert.That(draftsJson, Is.EqualTo("\"drafts\""));
+            Assert.That(JsonSerializer.Deserialize<SendMode>("\"confirm_dialog\""),
+                Is.EqualTo(SendMode.ConfirmDialog));
+            Assert.That(JsonSerializer.Deserialize<SendMode>("\"drafts\""),
+                Is.EqualTo(SendMode.Drafts));
+        });
+    }
+
+    [Test]
     public void RejectsNumericJsonValues()
     {
         Assert.Throws<JsonException>(() =>

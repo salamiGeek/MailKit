@@ -76,6 +76,13 @@ public static class TestGatewayRegistration
             // any registration runs, keeping the production gate unconditional.
             services.AddSingleton<ISendCommitApprover, AutomaticSendCommitApprover>();
         }
+        if (fixtures.Contains("drafts"))
+        {
+            // Drafts-mode commits skip the local approval dialog by design (nothing
+            // is delivered), so no approver swap is needed for the e2e drafts
+            // scenario: only the fake draft store replaces the IMAP-backed one.
+            services.AddSingleton<IDraftMessageStore, FakeDraftStore>();
+        }
     }
 #endif
 }
@@ -467,6 +474,54 @@ internal sealed class FakeSmtpGateway : ISmtpGateway
             Directory.CreateDirectory(Path.GetDirectoryName(deliveryLogPath)!);
             File.AppendAllText(
                 deliveryLogPath,
+                JsonSerializer.Serialize(record) + Environment.NewLine);
+        }
+
+        return Task.FromResult(SendTransportOutcome.Succeeded());
+    }
+}
+
+/// <summary>
+/// Records every accepted draft save as one JSON line under
+/// <c>&lt;data&gt;/test-fixtures/draft-saves.jsonl</c> (including the exact MIME
+/// bytes as base64) so stdio process tests can assert that a drafts-mode commit
+/// saved the composed message once, never delivered it, and a repeated commit never
+/// saved a second copy.
+/// </summary>
+internal sealed class FakeDraftStore : IDraftMessageStore
+{
+    private readonly string saveLogPath;
+    private readonly object gate = new();
+
+    public FakeDraftStore()
+    {
+        saveLogPath = Path.Combine(
+            AppDataPaths.Resolve(), "test-fixtures", "draft-saves.jsonl");
+    }
+
+    public Task<SendTransportOutcome> SaveAsync(
+        AccountProfile profile,
+        PasswordCredentialLease credential,
+        PreparedOutgoingMessage message,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentNullException.ThrowIfNull(message);
+
+        // Snapshot before the application's finally block zeroes the MIME bytes.
+        string mimeBase64 = Convert.ToBase64String(message.MimeMessage);
+        var record = new
+        {
+            saved_at = DateTimeOffset.UtcNow,
+            account_id = message.AccountId,
+            message_id = message.MessageId,
+            mime_base64 = mimeBase64
+        };
+        lock (gate)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(saveLogPath)!);
+            File.AppendAllText(
+                saveLogPath,
                 JsonSerializer.Serialize(record) + Environment.NewLine);
         }
 

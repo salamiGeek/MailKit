@@ -28,8 +28,9 @@ public sealed class SendTools
         + "Never accepts passwords or tokens.")]
     public static Task<ToolResult<SendPreview>> PrepareAsync(
         [Description(
-            "Account ID whose configured SMTP endpoint sends the message, the draft itself, and the "
-            + "caller-chosen idempotency key ([A-Za-z0-9._-], up to 128 characters). "
+            "Account ID whose configured endpoint executes the commit (SMTP delivery by default, "
+            + "or an IMAP Drafts-folder save when the account's send_mode is drafts), the draft itself, "
+            + "and the caller-chosen idempotency key ([A-Za-z0-9._-], up to 128 characters). "
             + "Local attachment paths must stay inside configured upload roots.")]
             SendPrepareRequest request,
         McpServer server,
@@ -47,10 +48,12 @@ public sealed class SendTools
     [Description(
         "Commits one prepared send by consuming its one-time confirmation token. "
         + "Accepts no draft fields and no caller-supplied session identity; "
-        + "the caller is derived from the MCP session. The server additionally "
-        + "requires local human approval (a confirmation dialog on the user's "
-        + "machine) before delivering; a declined approval returns a stable "
-        + "error and does not consume the token. Never accepts passwords or tokens.")]
+        + "the caller is derived from the MCP session. For the default send_mode "
+        + "the server additionally requires local human approval (a confirmation "
+        + "dialog on the user's machine) before delivering; a declined approval "
+        + "returns a stable error and does not consume the token. For send_mode "
+        + "drafts the server instead saves the message to the account's Drafts "
+        + "folder and never delivers it. Never accepts passwords or tokens.")]
     public static Task<ToolResult<SendStatus>> CommitAsync(
         [Description("The one-time confirmation token returned by send_prepare.")]
             SendCommitRequest request,
@@ -65,8 +68,9 @@ public sealed class SendTools
 
     [McpServerTool(Name = "send_status", UseStructuredContent = true)]
     [Description(
-        "Reports the durable ledger state (prepared, attempting, succeeded, failed, indeterminate) "
-        + "recorded for one account and idempotency key.")]
+        "Reports the durable ledger state (prepared, attempting, succeeded, drafted, failed, indeterminate) "
+        + "recorded for one account and idempotency key; drafted means the message was saved "
+        + "to the account's Drafts folder and nothing was delivered.")]
     public static Task<ToolResult<SendStatus>> GetStatusAsync(
         [Description("The account ID and idempotency key used in send_prepare.")]
             SendStatusRequest request,

@@ -48,6 +48,50 @@ public class JsonAccountProfileStoreTests
     }
 
     [Test]
+    public async Task PutAndGetRoundTripsTheSendMode()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+
+        var explicitDrafts = CreateProfile("work") with { SendMode = SendMode.Drafts };
+        var defaultMode = CreateProfile("home");
+        await store.PutAsync(explicitDrafts, CancellationToken.None);
+        await store.PutAsync(defaultMode, CancellationToken.None);
+
+        var draftsJson = await File.ReadAllTextAsync(
+            Path.Combine(temp.Path, "accounts", "work.json"));
+        var defaultJson = await File.ReadAllTextAsync(
+            Path.Combine(temp.Path, "accounts", "home.json"));
+        Assert.Multiple(async () =>
+        {
+            Assert.That((await store.GetAsync("work", CancellationToken.None))!.SendMode,
+                Is.EqualTo(SendMode.Drafts));
+            Assert.That((await store.GetAsync("home", CancellationToken.None))!.SendMode,
+                Is.EqualTo(SendMode.ConfirmDialog));
+            Assert.That(draftsJson, Does.Contain("\"send_mode\":\"drafts\""));
+            Assert.That(defaultJson, Does.Contain("\"send_mode\":\"confirm_dialog\""));
+        });
+    }
+
+    [Test]
+    public async Task ProfileStoredWithoutSendModeDeserializesToConfirmDialog()
+    {
+        using var temp = new TemporaryDirectory();
+        var store = new JsonAccountProfileStore(temp.Path);
+        Directory.CreateDirectory(Path.Combine(temp.Path, "accounts"));
+        await File.WriteAllTextAsync(
+            Path.Combine(temp.Path, "accounts", "legacy.json"),
+            "{\"id\":\"legacy\",\"display_name\":\"Legacy\",\"username\":\"user@example.com\"," +
+            "\"authentication\":\"password\"," +
+            "\"imap\":{\"host\":\"imap.example.com\",\"port\":993,\"tls\":\"implicit_tls\"}," +
+            "\"pop3\":null,\"smtp\":null}");
+
+        var profile = await store.GetAsync("legacy", CancellationToken.None);
+
+        Assert.That(profile!.SendMode, Is.EqualTo(SendMode.ConfirmDialog));
+    }
+
+    [Test]
     public async Task GetReturnsNullWhenProfileDoesNotExist()
     {
         using var temp = new TemporaryDirectory();
@@ -443,6 +487,28 @@ public class AccountProfileValidatorTests
             "smtp.tls: invalid value"
         }));
         Assert.That(string.Join(Environment.NewLine, issues), Does.Not.Contain("999"));
+    }
+
+    [Test]
+    public void RejectsUndefinedSendModeWithoutEchoingItsValue()
+    {
+        var profile = CreateProfile("work") with { SendMode = (SendMode)999 };
+
+        var issues = AccountProfileValidator.Validate(profile);
+
+        Assert.That(issues, Is.EqualTo(new[] { "send_mode: invalid value" }));
+        Assert.That(string.Join(Environment.NewLine, issues), Does.Not.Contain("999"));
+    }
+
+    [TestCase(SendMode.ConfirmDialog)]
+    [TestCase(SendMode.Drafts)]
+    public void AcceptsBothDefinedSendModes(SendMode sendMode)
+    {
+        var profile = CreateProfile("work") with { SendMode = sendMode };
+
+        var issues = AccountProfileValidator.Validate(profile);
+
+        Assert.That(issues, Is.Empty);
     }
 
     [Test]
