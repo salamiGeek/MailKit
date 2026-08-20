@@ -130,22 +130,28 @@ public sealed class Pop3GatewayTests
     }
 
     [Test]
-    public void DuplicateUidlsRejectTheListingAsAConflict()
+    public async Task DuplicateUidlsAreToleratedAndListEveryMessage()
     {
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
         using var session = new ReplaySession(Conversation(
             count: 2,
-            new Pop3ReplayCommand("UIDL\r\n", Uidl("uidl-001", "uidl-001"))));
+            new("UIDL\r\n", Uidl("uidl-001", "uidl-001")),
+            new("LIST\r\n", ListSizes(120, 240)),
+            new("TOP 1 0\r\n", Headers("First")),
+            new("TOP 2 0\r\n", Headers("Second"))));
         var gateway = CreateGateway(session);
 
-        MailOperationException exception = Assert.ThrowsAsync<MailOperationException>(async () =>
-            await gateway.ListMessagesAsync(
-                Profile, credential, 0, 25, CancellationToken.None))!;
+        MessagePage page = await gateway.ListMessagesAsync(
+            Profile, credential, 0, 25, CancellationToken.None);
 
         Assert.Multiple(() =>
         {
-            Assert.That(exception.Error.Code, Is.EqualTo("pop3.uidl_conflict"));
-            Assert.That(exception.Error.Category, Is.EqualTo(ErrorCategory.Conflict));
+            // Both messages stay listed; reads resolve the first matching index.
+            Assert.That(page.Messages.Select(message => message.Reference.Uidl),
+                Is.EqualTo(new[] { "uidl-001", "uidl-001" }));
+            Assert.That(page.Messages.Select(message => message.Subject),
+                Is.EqualTo(new[] { "First", "Second" }));
+            Assert.That(page.NextOffset, Is.Null);
         });
         session.AssertComplete();
     }
