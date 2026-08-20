@@ -9,7 +9,7 @@ namespace MailKit.Agent.Mail.Tests.Sending;
 /// Unit tests for the pure dialog-text builder of the Windows local approval
 /// gate. The MessageBox itself is intentionally never opened here: it blocks
 /// until a human clicks, which would hang CI (see the note on
-/// <see cref="ApproveWithCanceledTokenReturnsFalseWithoutShowingADialog"/> for
+/// <see cref="ApproveWithCanceledTokenDeclinesWithoutShowingADialog"/> for
 /// the cancellation plumbing that IS covered).
 /// </summary>
 public class WindowsSendCommitApproverTests
@@ -148,11 +148,12 @@ public class WindowsSendCommitApproverTests
 	{
 		// Exercises the cancellation entry guard of the real approver without ever
 		// opening a visible MessageBox (an already-canceled token must decline
-		// synchronously, which keeps CI non-interactive). Two branches are
-		// deliberately untested because observing them headlessly is impossible:
-		// the input-desktop probe on a machine WITH an interactive desktop (it
-		// would proceed to a real, human-clickable dialog) and the WM_CLOSE
-		// mid-wait dismissal path.
+		// synchronously, which keeps CI non-interactive). The guard runs BEFORE the
+		// input-desktop probe, so this expectation is deterministic on every Windows
+		// host, headless ones included. Two branches are deliberately untested
+		// because observing them headlessly is impossible: the probe's positive
+		// branch on a machine WITH an interactive desktop (it proceeds to a real,
+		// human-clickable dialog) and the WM_CLOSE mid-wait dismissal path.
 		if (!OperatingSystem.IsWindows())
 			Assert.Ignore("The Windows approver's dialog plumbing only runs on Windows.");
 
