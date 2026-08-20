@@ -1,10 +1,19 @@
 {
   "name": "mailkit-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read IMAP and POP3 mailboxes and send confirmed email from local accounts with MailKit.",
-  "author": { "name": "yarnell", "email": "mryarnell@foxmail.com" },
+  "author": {
+    "name": "yarnell",
+    "email": "mryarnell@foxmail.com"
+  },
   "license": "MIT",
-  "keywords": ["email", "imap", "pop3", "smtp", "mailkit"],
+  "keywords": [
+    "email",
+    "imap",
+    "pop3",
+    "smtp",
+    "mailkit"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -13,7 +22,10 @@
     "longDescription": "Configure non-secret accounts with a local credential CLI, test IMAP, POP3, and SMTP connections, browse folders, list, search, and read messages, save attachments into an isolated download root, and send email only after a two-stage user confirmation through a bundled MailKit MCP server.",
     "developerName": "yarnell",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "List my configured email accounts.",
       "Check whether the local email server plugin is healthy.",

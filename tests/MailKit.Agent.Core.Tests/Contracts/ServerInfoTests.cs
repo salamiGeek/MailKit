@@ -12,7 +12,7 @@ public class ServerInfoTests
         Assert.Multiple(() =>
         {
             Assert.That(info.Name, Is.EqualTo("mailkit-agent"));
-            Assert.That(info.Version, Is.EqualTo("0.1.0"));
+            Assert.That(info.Version, Is.EqualTo("0.2.1"));
             Assert.That(info.Transport, Is.EqualTo("stdio"));
             Assert.That(info.NetworkListenerEnabled, Is.False);
         });
