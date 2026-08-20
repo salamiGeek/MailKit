@@ -32,6 +32,7 @@ description: Use when Codex is configuring accounts, testing connections, listin
 - Call `send_prepare` and show the complete preview (recipients, subject, body preview, and attachments) to the user.
 - Never call `send_commit` without explicit user confirmation for that exact preview.
 - `send_commit` consumes the one-time `confirmation_token` from `send_prepare`; a preparation expires after 10 minutes.
+- The server enforces a local confirmation dialog at commit time: a human must approve it locally before the message is delivered, and you must still show the complete preview in chat first. A declined approval is a stable error and does not consume the token; never retry the send automatically.
 - Reuse the same `idempotency_key` to ask about one send; never silently deliver a second copy.
 - If `send_status` reports `indeterminate`, never retry the send automatically: report the outcome and let the user decide.
 

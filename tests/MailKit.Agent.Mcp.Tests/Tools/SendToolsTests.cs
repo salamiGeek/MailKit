@@ -244,6 +244,9 @@ public class SendToolsTests
 
         var composer = new RecordingComposer();
         var smtp = new CountingSmtpGateway();
+        // A permissive recording fake (not AutomaticSendCommitApprover) keeps the
+        // handler tests explicit that local approval was granted per commit.
+        var approver = new RecordingSendApprover();
         var application = new SendApplication(
             store,
             new ConnectionToolsTests.FakeVault(),
@@ -254,6 +257,7 @@ public class SendToolsTests
                 TimeProvider.System),
             new MemoryPreparedSendStore(),
             new JsonSendLedger(dataDirectory),
+            approver,
             OperationPolicy.Default,
             MailSafetyLimits.Default,
             TimeProvider.System,
@@ -261,13 +265,14 @@ public class SendToolsTests
                 Path.Combine(dataDirectory, "downloads"),
                 Array.Empty<string>()));
 
-        return new Harness(application, composer, smtp, dataDirectory);
+        return new Harness(application, composer, smtp, approver, dataDirectory);
     }
 
     private sealed class Harness(
         SendApplication application,
         RecordingComposer composer,
         CountingSmtpGateway smtp,
+        RecordingSendApprover approver,
         string dataDirectory) : IDisposable
     {
         public SendApplication Application { get; } = application;
@@ -276,10 +281,23 @@ public class SendToolsTests
 
         public CountingSmtpGateway Smtp { get; } = smtp;
 
+        public RecordingSendApprover Approver { get; } = approver;
+
         public void Dispose()
         {
             if (Directory.Exists(dataDirectory))
                 Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    private sealed class RecordingSendApprover : ISendCommitApprover
+    {
+        public List<SendPreview> Approvals { get; } = [];
+
+        public ValueTask<bool> ApproveAsync(SendPreview preview, CancellationToken cancellationToken)
+        {
+            Approvals.Add(preview);
+            return ValueTask.FromResult(true);
         }
     }
 

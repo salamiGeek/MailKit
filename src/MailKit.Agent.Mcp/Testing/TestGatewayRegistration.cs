@@ -66,7 +66,16 @@ public static class TestGatewayRegistration
         if (fixtures.Contains("pop3"))
             services.AddSingleton<IPop3Gateway, FakePop3Gateway>();
         if (fixtures.Contains("smtp"))
+        {
             services.AddSingleton<ISmtpGateway, FakeSmtpGateway>();
+
+            // The stdio e2e prepare->commit flow must stay unattended, so the smtp
+            // fixture also swaps the local human-approval gate for the automatic
+            // approver. This is reachable ONLY in DEBUG builds with
+            // MAILKIT_AGENT_TEST_MODE=1; Release builds reject the env var before
+            // any registration runs, keeping the production gate unconditional.
+            services.AddSingleton<ISendCommitApprover, AutomaticSendCommitApprover>();
+        }
     }
 #endif
 }

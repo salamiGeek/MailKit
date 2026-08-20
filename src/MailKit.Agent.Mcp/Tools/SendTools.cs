@@ -47,7 +47,10 @@ public sealed class SendTools
     [Description(
         "Commits one prepared send by consuming its one-time confirmation token. "
         + "Accepts no draft fields and no caller-supplied session identity; "
-        + "the caller is derived from the MCP session. Never accepts passwords or tokens.")]
+        + "the caller is derived from the MCP session. The server additionally "
+        + "requires local human approval (a confirmation dialog on the user's "
+        + "machine) before delivering; a declined approval returns a stable "
+        + "error and does not consume the token. Never accepts passwords or tokens.")]
     public static Task<ToolResult<SendStatus>> CommitAsync(
         [Description("The one-time confirmation token returned by send_prepare.")]
             SendCommitRequest request,

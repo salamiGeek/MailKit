@@ -281,6 +281,130 @@ public class SendApplicationTests
     }
 
     [Test]
+    public async Task DeclinedApprovalDoesNotConsumeTokenOrSendOrWriteLedger()
+    {
+        // The local approval gate must run BEFORE the one-time token is consumed,
+        // so a declined send keeps every retry right the caller already had.
+        var approveNext = false;
+        using var fixture = CreateFixture(approver: new FakeSendApprover((_, _) =>
+        {
+            bool decision = approveNext;
+            approveNext = true;
+            return Task.FromResult(decision);
+        }));
+
+        SendPreview preview = await PrepareAsync(fixture, "idem-declined", "session-a");
+        ToolResult<SendStatus> declined = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+        int sendCountAfterDecline = fixture.Smtp.SendCount;
+        int passwordCallsAfterDecline = fixture.Vault.PasswordCalls;
+        ToolResult<SendStatus> statusAfterDecline = await fixture.Application.GetStatusAsync(
+            "personal", "idem-declined", CancellationToken.None);
+        ToolResult<SendStatus> retried = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            AssertFailure(declined, "send.approval_declined", ErrorCategory.Validation);
+            Assert.That(declined.Error!.Message, Is.EqualTo("The send was not approved locally."));
+            Assert.That(declined.Error.Retryable, Is.False);
+            Assert.That(sendCountAfterDecline, Is.Zero,
+                "A declined approval must never reach SMTP.");
+            Assert.That(passwordCallsAfterDecline, Is.Zero);
+            Assert.That(statusAfterDecline.Data!.State, Is.EqualTo(SendState.Prepared),
+                "A declined approval must not write Attempting or any terminal ledger state.");
+            Assert.That(retried.Ok, Is.True, retried.Error?.Message);
+            Assert.That(retried.Data!.State, Is.EqualTo(SendState.Succeeded));
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1),
+                "The SAME one-time token must still deliver after a later approval is granted.");
+        });
+    }
+
+    [Test]
+    public async Task ApproverSeesTheExactPreparedPreview()
+    {
+        using var fixture = CreateFixture();
+        SendPreview preview = await PrepareAsync(fixture, "idem-preview", "session-a");
+
+        await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+
+        SendPreview seen = fixture.Approver.Seen.Single();
+        Assert.Multiple(() =>
+        {
+            Assert.That(seen.Subject, Is.EqualTo(SecretSubject));
+            Assert.That(seen.From, Is.EqualTo("Bob <user@example.com>"));
+            Assert.That(seen.To, Is.EqualTo(new[] { "Alice <alice@example.com>" }));
+            Assert.That(seen.Cc, Is.EqualTo(new[] { "carol@example.com" }));
+            Assert.That(seen.Bcc, Is.EqualTo(new[] { "hidden@example.com" }));
+            Assert.That(seen.AttachmentCount, Is.EqualTo(1));
+            Assert.That(seen.AttachmentNames, Is.EqualTo(new[] { "report.txt" }));
+            Assert.That(seen.IdempotencyKeyHash, Is.EqualTo(preview.IdempotencyKeyHash));
+            Assert.That(seen.ContentHash, Is.EqualTo(preview.ContentHash));
+            Assert.That(seen.MessageId, Is.EqualTo("<message-1@example.com>"));
+            Assert.That(seen.ExpiresAt, Is.EqualTo(preview.ExpiresAt));
+        });
+    }
+
+    [Test]
+    public async Task ApprovalHappensBeforeThePreparationIsConsumed()
+    {
+        var preparationStillStoredAtApproval = new List<bool>();
+        using var fixture = CreateFixture();
+        fixture.Approver.PreparationProbe = preview =>
+        {
+            preparationStillStoredAtApproval.Add(
+                fixture.PreparedStore.TryGetAsync(preview.PreparationId, CancellationToken.None)
+                    .GetAwaiter().GetResult() is not null);
+            return true;
+        };
+
+        SendPreview preview = await PrepareAsync(fixture, "idem-order", "session-a");
+        await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(preparationStillStoredAtApproval, Is.EqualTo(new[] { true }),
+                "The preparation must still be stored while approval is pending: approval precedes TakeAsync.");
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task CancellationWhileWaitingForApprovalDoesNotPoisonTheLedger()
+    {
+        var cancelledOnce = false;
+        using var fixture = CreateFixture(approver: new FakeSendApprover(
+            (_, cancellationToken) =>
+            {
+                if (cancelledOnce)
+                    return Task.FromResult(true);
+                cancelledOnce = true;
+                return Task.FromException<bool>(new OperationCanceledException(cancellationToken));
+            }));
+        SendPreview preview = await PrepareAsync(fixture, "idem-cancel-approval", "session-a");
+
+        Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None));
+        int sendCountAfterCancellation = fixture.Smtp.SendCount;
+
+        ToolResult<SendStatus> status = await fixture.Application.GetStatusAsync(
+            "personal", "idem-cancel-approval", CancellationToken.None);
+        ToolResult<SendStatus> later = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+        Assert.Multiple(() =>
+        {
+            Assert.That(status.Data!.State, Is.EqualTo(SendState.Prepared),
+                "Cancellation during approval must not write Attempting or Indeterminate.");
+            Assert.That(sendCountAfterCancellation, Is.Zero);
+            Assert.That(later.Ok, Is.True, later.Error?.Message);
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1),
+                "The token stays usable after a cancelled approval wait.");
+        });
+    }
+
+    [Test]
     public async Task AttemptingFromEarlierProcessIsIndeterminateAndNeverInvokesSmtp()
     {
         using var fixture = CreateFixture();
@@ -560,7 +684,8 @@ public class SendApplicationTests
         FakeSmtpGateway? smtp = null,
         ISendLedger? ledger = null,
         IPreparedSendStore? preparedStore = null,
-        Action<FakeSmtpGateway>? smtpConfiguration = null)
+        Action<FakeSmtpGateway>? smtpConfiguration = null,
+        FakeSendApprover? approver = null)
     {
         var smtpGateway = smtp ?? new FakeSmtpGateway();
         smtpConfiguration?.Invoke(smtpGateway);
@@ -570,7 +695,8 @@ public class SendApplicationTests
             composer ?? new FakeComposer(),
             smtpGateway,
             ledger,
-            preparedStore);
+            preparedStore,
+            approver ?? new FakeSendApprover());
     }
 
     private static void AssertFailure<T>(ToolResult<T> result, string code, ErrorCategory category)
@@ -598,7 +724,8 @@ public class SendApplicationTests
             FakeComposer composer,
             FakeSmtpGateway smtp,
             ISendLedger? ledger,
-            IPreparedSendStore? preparedStore)
+            IPreparedSendStore? preparedStore,
+            FakeSendApprover approver)
         {
             Temp = new TemporaryDirectory();
             Time = new MutableTimeProvider(Now);
@@ -608,6 +735,7 @@ public class SendApplicationTests
             Vault = vault;
             Composer = composer;
             Smtp = smtp;
+            Approver = approver;
             PreparedStore = preparedStore ?? new MemoryPreparedSendStore(Time);
             Ledger = ledger ?? new JsonSendLedger(Temp.Path);
 
@@ -623,6 +751,7 @@ public class SendApplicationTests
                 Codec,
                 PreparedStore,
                 Ledger,
+                Approver,
                 OperationPolicy.Default,
                 MailSafetyLimits.Default,
                 Time,
@@ -639,12 +768,38 @@ public class SendApplicationTests
         public FakeVault Vault { get; }
         public FakeComposer Composer { get; }
         public FakeSmtpGateway Smtp { get; }
+        public FakeSendApprover Approver { get; }
         public IPreparedSendStore PreparedStore { get; }
         public ISendLedger Ledger { get; }
         public SendApplication Application { get; }
         public string AttachmentPath { get; }
 
         public void Dispose() => Temp.Dispose();
+    }
+
+    /// <summary>
+    /// Permissive recording approver so each test states explicitly that local
+    /// approval was granted; production hosts never inject an automatic approver.
+    /// </summary>
+    private sealed class FakeSendApprover(
+        Func<SendPreview, CancellationToken, Task<bool>>? handler = null) : ISendCommitApprover
+    {
+        private readonly Func<SendPreview, CancellationToken, Task<bool>>? handler = handler;
+
+        public List<SendPreview> Seen { get; } = [];
+
+        public Func<SendPreview, bool>? PreparationProbe { get; set; }
+
+        public async ValueTask<bool> ApproveAsync(
+            SendPreview preview, CancellationToken cancellationToken)
+        {
+            Seen.Add(preview);
+            if (PreparationProbe?.Invoke(preview) == false)
+                return false;
+            if (handler is null)
+                return true;
+            return await handler(preview, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
@@ -823,6 +978,57 @@ public class MemoryPreparedSendStoreTests
         {
             Assert.That(taken, Is.Null);
             Assert.That(message.MimeMessage, Has.All.Zero);
+        });
+    }
+
+    [Test]
+    public async Task TryGetReturnsPreparationWithoutConsumingIt()
+    {
+        var time = new MutableTimeProvider(Now);
+        using var store = new MemoryPreparedSendStore(time);
+        var message = Message(preparationId: "prep-peek", expiresAt: Now.AddMinutes(10));
+        await store.AddAsync(message, CancellationToken.None);
+
+        var firstPeek = await store.TryGetAsync("prep-peek", CancellationToken.None);
+        var secondPeek = await store.TryGetAsync("prep-peek", CancellationToken.None);
+        var taken = await store.TakeAsync("prep-peek", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(firstPeek, Is.EqualTo(message));
+            Assert.That(secondPeek, Is.EqualTo(message),
+                "Peeking must be repeatable without consuming the preparation.");
+            Assert.That(taken, Is.EqualTo(message),
+                "A peek must leave the preparation available to a later TakeAsync.");
+        });
+    }
+
+    [Test]
+    public async Task TryGetReturnsNullForUnknownPreparation()
+    {
+        using var store = new MemoryPreparedSendStore(new MutableTimeProvider(Now));
+
+        var peeked = await store.TryGetAsync("unknown", CancellationToken.None);
+
+        Assert.That(peeked, Is.Null);
+    }
+
+    [Test]
+    public async Task TryGetSweepsExpiredPreparationsLikeTake()
+    {
+        var time = new MutableTimeProvider(Now);
+        using var store = new MemoryPreparedSendStore(time);
+        var message = Message(preparationId: "prep-peek-expired", expiresAt: Now.AddMinutes(10));
+        await store.AddAsync(message, CancellationToken.None);
+        time.SetUtcNow(Now.AddMinutes(10));
+
+        var peeked = await store.TryGetAsync("prep-peek-expired", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(peeked, Is.Null);
+            Assert.That(message.MimeMessage, Has.All.Zero,
+                "An expired preparation must be swept and zeroed even when only peeked.");
         });
     }
 

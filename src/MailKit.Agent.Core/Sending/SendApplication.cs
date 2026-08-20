@@ -15,10 +15,14 @@ namespace MailKit.Agent.Core.Sending;
 /// Protocol-agnostic two-phase send workflow. <see cref="PrepareAsync"/> validates a
 /// draft, composes MIME once, and stores an in-memory preparation with an HMAC
 /// confirmation token without acquiring credentials or an SMTP connection.
-/// <see cref="CommitAsync"/> consumes the one-time token, writes the ledger
-/// <see cref="SendState.Attempting"/> record before any network I/O, acquires a fresh
-/// password lease, invokes SMTP exactly once, persists the returned terminal state,
-/// and disposes secrets and MIME bytes.
+/// <see cref="CommitAsync"/> first validates the one-time token cheaply (expiry,
+/// session, account, content hash), then requires a local human approval from
+/// <see cref="ISendCommitApprover"/> — a factor the MCP caller cannot produce on
+/// its own — BEFORE consuming the token: a declined or cancelled approval leaves
+/// the preparation intact for a later approved commit. Once approved, the commit
+/// consumes the token, writes the ledger <see cref="SendState.Attempting"/> record
+/// before any network I/O, acquires a fresh password lease, invokes SMTP exactly
+/// once, persists the returned terminal state, and disposes secrets and MIME bytes.
 /// </summary>
 public sealed class SendApplication
 {
@@ -42,6 +46,7 @@ public sealed class SendApplication
     private readonly ISendConfirmationCodec confirmationCodec;
     private readonly IPreparedSendStore preparedStore;
     private readonly ISendLedger sendLedger;
+    private readonly ISendCommitApprover sendApprover;
     private readonly OperationPolicy policy;
     private readonly MailSafetyLimits safetyLimits;
     private readonly MailFileOptions mailFileOptions;
@@ -56,6 +61,7 @@ public sealed class SendApplication
         ISendConfirmationCodec confirmationCodec,
         IPreparedSendStore preparedStore,
         ISendLedger sendLedger,
+        ISendCommitApprover sendApprover,
         OperationPolicy policy,
         MailSafetyLimits safetyLimits,
         TimeProvider? timeProvider = null,
@@ -69,6 +75,7 @@ public sealed class SendApplication
         this.confirmationCodec = confirmationCodec ?? throw new ArgumentNullException(nameof(confirmationCodec));
         this.preparedStore = preparedStore ?? throw new ArgumentNullException(nameof(preparedStore));
         this.sendLedger = sendLedger ?? throw new ArgumentNullException(nameof(sendLedger));
+        this.sendApprover = sendApprover ?? throw new ArgumentNullException(nameof(sendApprover));
         this.policy = policy ?? throw new ArgumentNullException(nameof(policy));
         this.safetyLimits = safetyLimits ?? throw new ArgumentNullException(nameof(safetyLimits));
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -257,6 +264,53 @@ public sealed class SendApplication
             return ValidationFailure<SendStatus>(
                 "send.session_mismatch",
                 "The send confirmation does not belong to this session.", correlationId);
+        }
+
+        // Peek the preparation WITHOUT consuming it: the local human-approval gate
+        // below must see the exact preview first, and a declined approval keeps the
+        // one-time token intact for a later approved commit (bounded by the TTL).
+        PreparedOutgoingMessage? peeked = await preparedStore.TryGetAsync(
+            payload.PreparationId, cancellationToken).ConfigureAwait(false);
+        if (peeked is null)
+        {
+            return ValidationFailure<SendStatus>(
+                "send.preparation_not_found",
+                "The prepared message is unknown, expired, or already consumed.", correlationId);
+        }
+
+        if (!string.Equals(peeked.AccountId, payload.AccountId, StringComparison.Ordinal) ||
+            !string.Equals(peeked.ContentHash, payload.ContentHash, StringComparison.Ordinal) ||
+            !string.Equals(peeked.IdempotencyKeyHash, payload.IdempotencyKeyHash, StringComparison.Ordinal))
+        {
+            return ValidationFailure<SendStatus>(
+                "send.confirmation_mismatch",
+                "The send confirmation does not match the prepared message.", correlationId);
+        }
+
+        bool approved;
+        try
+        {
+            approved = await sendApprover.ApproveAsync(peeked.Preview, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation while waiting for approval follows normal cancellation
+            // semantics: no ledger write, no token consumption, no SMTP.
+            throw;
+        }
+        catch (Exception)
+        {
+            return AccountOperationBoundary.Failure<SendStatus>(
+                "mail.operation_failed", ErrorCategory.Internal,
+                "The send commit failed.", correlationId);
+        }
+
+        if (!approved)
+        {
+            return ValidationFailure<SendStatus>(
+                "send.approval_declined",
+                "The send was not approved locally.", correlationId);
         }
 
         PreparedOutgoingMessage? message = await preparedStore.TakeAsync(

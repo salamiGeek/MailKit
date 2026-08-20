@@ -21,7 +21,7 @@
 | 邮件 | 已读状态 | `message_mark_read` | `ImapFolder.Store`（`\Seen`） | IMAP 连接 | 可恢复写入 | `MailboxToolsTests.MessageMarkReadForwardsReferencesAndTargetFlag`; `ImapGatewayTests.MarkReadBatchesStableUidsAndExplicitlyRemovesSeen` | 已支持 |
 | 附件 | 附件列表 | `attachment_list` | `ImapFolder` / `Pop3Client` | IMAP 或 POP3 连接 | 只读 | `MailboxToolsTests.AttachmentListForwardsReferenceAndReturnsUntrustedNames`; `AttachmentApplicationTests.ListUsesDescriptorOnlyGatewayOperation` | 已支持 |
 | 附件 | 保存到下载根目录 | `attachment_save` | `ImapFolder` / `Pop3Client` + 本地文件 | IMAP 或 POP3 连接 | 可恢复写入（仅本地隔离目录） | `MailboxToolsTests.AttachmentSaveStoresPayloadInsideIsolatedDownloadRoot`; `AttachmentServiceTests.SavesAtomicallyWithoutLeavingTemporaryFiles` | 已支持 |
-| 发送 | 发送（两阶段确认） | `send_prepare` + `send_commit` | `SmtpClient.Send` | SMTP 连接、显式用户确认、一次性令牌 | 外部影响或不可逆 | `SendToolsTests.PrepareBindsProcessSessionAndReturnsRedactedPreviewWithToken`; `SendToolsTests.CommitConsumesOneTimeTokenAndDeliversExactlyOnce`; `SendApplicationTests.IndeterminateTransportOutcomeIsTerminalAndNeverResent` | 已支持 |
+| 发送 | 发送（两阶段确认） | `send_prepare` + `send_commit` | `SmtpClient.Send` | SMTP 连接、显式用户确认、一次性令牌、本机人工批准弹窗（拒绝返回稳定的 `send.approval_declined`，不消耗令牌） | 外部影响或不可逆 | `SendToolsTests.PrepareBindsProcessSessionAndReturnsRedactedPreviewWithToken`; `SendToolsTests.CommitConsumesOneTimeTokenAndDeliversExactlyOnce`; `SendApplicationTests.DeclinedApprovalDoesNotConsumeTokenOrSendOrWriteLedger`; `SendApplicationTests.IndeterminateTransportOutcomeIsTerminalAndNeverResent` | 已支持 |
 | 发送 | 发送状态 | `send_status` | 无（本地发送账本） | 已记录的幂等键 | 只读 | `SendToolsTests.StatusReportsTheDurableTerminalState`; `SendApplicationTests.GetStatusReturnsUnknownKeyFailureWithoutEchoingRawKey` | 已支持 |
 | 邮件 | 写入（草稿） | 无对应工具 | 基础版不调用 | IMAP 连接及服务器所需能力 | 可恢复写入 | 未实现 | 计划中 — 后续计划 3：**可恢复写入和草稿** |
 | 邮件 | 删除 | 无对应工具 | 不调用 | IMAP 连接 | 外部影响或不可逆 | 未实现 | 计划中 — 后续计划 4：**发送、永久删除、确认和幂等性** |
@@ -29,6 +29,6 @@
 | 身份验证 | OAuth | 无对应工具 | 不调用 | Gmail 或 Microsoft OAuth 客户端配置 | 外部影响或不可逆 | 未实现 | 计划中 — 后续计划 1：**账户保险库以及 Gmail/Microsoft OAuth** |
 | 高级 IMAP | ACL、配额、元数据和注解 | 无对应工具 | 不调用 | IMAP 连接、相应的服务器能力和账户授权 | 因能力而异：从只读到外部影响或不可逆 | 未实现 | 计划中 — 后续计划 5：**ACL、配额、元数据、注解、POP3 高级操作和诊断** |
 
-发送约束：发送的收件地址仅支持 ASCII（显示名支持 Unicode）；SMTPUTF8 服务器能力协商已实现，但当前经 MCP 不可达，属后续计划。
+发送约束：发送的收件地址仅支持 ASCII（显示名支持 Unicode）；SMTPUTF8 服务器能力协商已实现，但当前经 MCP 不可达，属后续计划。发送提交阶段由服务器强制本机人工批准弹窗（非 Windows 或无交互桌面返回 `send.approval_declined`；被拒绝不消耗确认令牌）。
 
 当前版本不提供可执行任意 IMAP、POP3 或 SMTP 命令的工具，也不提供 POP3 的文件夹、搜索或已读状态操作（协议本身没有这些概念）。未来能力必须满足协议支持、安全策略、确认要求和自动化契约测试后，状态才能变更为 `已支持`。

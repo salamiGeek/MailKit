@@ -4,8 +4,9 @@ namespace MailKit.Agent.Core.Sending;
 
 /// <summary>
 /// In-memory prepared-send store. <see cref="TakeAsync"/> removes a preparation
-/// atomically so a one-time confirmation token can only ever be consumed once.
-/// Expired preparations are swept on access and their MIME byte arrays are zeroed.
+/// atomically so a one-time confirmation token can only ever be consumed once,
+/// while <see cref="TryGetAsync"/> peeks without consuming. Expired preparations
+/// are swept on access and their MIME byte arrays are zeroed.
 /// </summary>
 public sealed class MemoryPreparedSendStore : IPreparedSendStore, IDisposable
 {
@@ -33,6 +34,21 @@ public sealed class MemoryPreparedSendStore : IPreparedSendStore, IDisposable
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task<PreparedOutgoingMessage?> TryGetAsync(
+        string preparationId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PreparedOutgoingMessage? peeked;
+        lock (gate)
+        {
+            SweepExpired_unlocked();
+            peeked = items.TryGetValue(preparationId, out var message) ? message : null;
+        }
+
+        return Task.FromResult(peeked);
     }
 
     public Task<PreparedOutgoingMessage?> TakeAsync(
