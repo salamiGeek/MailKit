@@ -69,7 +69,7 @@ public sealed class ImapGatewayTests
             Select("A00000005", ExpectedUidValidity, 3),
             new("A00000006 UID SEARCH RETURN (ALL) ALL\r\n",
                 "* ESEARCH (TAG \"A00000006\") UID ALL 10,30,20\r\nA00000006 OK SEARCH completed\r\n"),
-            FetchSummaries("A00000007", "30,20"));
+            FetchSummaries("A00000007", "20,30"));
         var gateway = CreateGateway(session);
 
         MessagePage page = await gateway.ListMessagesAsync(
@@ -87,6 +87,49 @@ public sealed class ImapGatewayTests
     }
 
     [Test]
+    public async Task ListMessagesFetchesAscendingUidRangesForStrictServers()
+    {
+        uint[] descendingPage = [11650, 11649, 9725, 9724, 9723];
+        using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
+        using var session = new ReplaySession(
+            Select("A00000005", ExpectedUidValidity, 5),
+            new("A00000006 UID SEARCH RETURN (ALL) ALL\r\n",
+                "* ESEARCH (TAG \"A00000006\") UID ALL 11650,11649,9725,9724,9723\r\n" +
+                "A00000006 OK SEARCH completed\r\n"),
+            FetchConsecutiveSummaries("A00000007", "9723:9725,11649:11650", descendingPage));
+        var gateway = CreateGateway(session);
+
+        MessagePage page = await gateway.ListMessagesAsync(
+            Profile, credential, "INBOX", offset: 0, pageSize: 5, CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            // Presentation order stays newest-first even though the wire set is ascending.
+            Assert.That(page.Messages.Select(message => message.Reference.Uid),
+                Is.EqualTo(descendingPage.Select(uid => (uint?)uid)));
+            Assert.That(page.NextOffset, Is.Null);
+        });
+        session.AssertComplete();
+    }
+
+    private static ImapReplayCommand FetchConsecutiveSummaries(
+        string tag,
+        string expectedCommandUids,
+        uint[] responseUids)
+    {
+        var response = string.Concat(responseUids.Select((uid, index) =>
+            $"* {index + 1} FETCH (UID {uid} FLAGS () INTERNALDATE \"19-Aug-2026 09:00:00 +0000\" " +
+            $"RFC822.SIZE 120 ENVELOPE (\"Tue, 19 Aug 2026 09:00:00 +0000\" \"UID {uid}\" " +
+            "((\"Alice\" NIL \"alice\" \"example.test\")) NIL NIL " +
+            "((\"Bob\" NIL \"bob\" \"example.test\")) NIL NIL NIL \"<message@example.test>\") " +
+            "BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL \"7BIT\" 4 1))\r\n"));
+
+        return new ImapReplayCommand(
+            $"{tag} UID FETCH {expectedCommandUids} (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODYSTRUCTURE)\r\n",
+            response + $"{tag} OK FETCH completed\r\n");
+    }
+
+    [Test]
     public async Task ExpungedUidAdvancesPageByReturnedLiveMessages()
     {
         using PasswordCredentialLease credential = PasswordCredentialLease.FromCharacters("secret");
@@ -95,7 +138,7 @@ public sealed class ImapGatewayTests
                    new("A00000006 UID SEARCH RETURN (ALL) ALL\r\n",
                        "* ESEARCH (TAG \"A00000006\") UID ALL 30,20,10\r\n" +
                        "A00000006 OK SEARCH completed\r\n"),
-                   FetchSingleSummary("A00000007", "30,20", 20, "Still live")))
+                   FetchSingleSummary("A00000007", "20,30", 20, "Still live")))
         {
             var firstGateway = CreateGateway(firstSession);
 
