@@ -38,7 +38,11 @@ public class PluginPackageTests
 		"confirmation_token",
 		"idempotency_key",
 		"implicit_tls",
-		"start_tls"
+		"start_tls",
+		"send_mode",
+		"confirm_dialog",
+		"drafts",
+		"drafted"
 	};
 
 	private static readonly string[] PlannedOnlyCapabilityKeywords =
@@ -46,7 +50,9 @@ public class PluginPackageTests
 		"删除",
 		"移动",
 		"归档",
-		"草稿",
+		// Draft-folder MANAGEMENT (viewing, editing, deleting existing drafts) stays
+		// planned; the send_mode drafts workflow is part of the supported send row.
+		"草稿管理",
 		"OAuth"
 	};
 
@@ -210,6 +216,43 @@ public class PluginPackageTests
 				"SKILL.md must tell the model the server enforces a local confirmation dialog.");
 			Assert.That(skill, Does.Contain("still show the complete preview"),
 				"SKILL.md must keep the chat-side preview obligation alongside the server gate.");
+		});
+	}
+
+	[Test]
+	public void UserDocsAndSkillDiscloseTheDraftsSendMode()
+	{
+		// The per-account drafts workflow changes observable send behavior, so the
+		// docs and the skill must disclose it in lockstep with the code: the field,
+		// both values, the drafted terminal state, and the human review step.
+		var skill = MailboxSkillText;
+
+		Assert.Multiple(() =>
+		{
+			Assert.That(GettingStartedText, Does.Contain("\"send_mode\""),
+				"getting-started.md must document the profile's send_mode field.");
+			Assert.That(GettingStartedText, Does.Contain("`confirm_dialog`"));
+			Assert.That(GettingStartedText, Does.Contain("`drafts`"));
+			Assert.That(GettingStartedText, Does.Contain("保存到草稿箱"),
+				"getting-started.md must describe the drafts save target.");
+			Assert.That(GettingStartedText, Does.Contain("自行发送"),
+				"getting-started.md must state the human sends the draft manually.");
+			Assert.That(GettingStartedText, Does.Contain("旧草稿由用户自行管理"),
+				"getting-started.md must state re-saves create a new draft and old ones stay user-managed.");
+			Assert.That(GettingStartedText, Does.Contain("`drafted`"),
+				"getting-started.md must name the drafted terminal state.");
+			Assert.That(GettingStartedText, Does.Contain("`imap.not_configured`"),
+				"getting-started.md must document the drafts-mode IMAP precondition error.");
+			Assert.That(CapabilityMatrixText, Does.Contain("send_mode"),
+				"capability-matrix.md must note the drafts mode on the send row.");
+			Assert.That(CapabilityMatrixText, Does.Contain("`drafted`"),
+				"capability-matrix.md must name the Drafted state.");
+			Assert.That(skill, Does.Contain("Drafts folder"),
+				"SKILL.md must tell the model where the draft lands for review.");
+			Assert.That(skill, Does.Contain("never claim it was sent"),
+				"SKILL.md must forbid claiming a draft was sent.");
+			Assert.That(skill, Does.Contain("`send_mode`"),
+				"SKILL.md must reference the profile field that selects the mode.");
 		});
 	}
 

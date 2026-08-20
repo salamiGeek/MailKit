@@ -53,6 +53,158 @@ public class SendApplicationTests
     }
 
     [Test]
+    public async Task PrepareAnnouncesTheConfirmDialogModeInThePreview()
+    {
+        using var fixture = CreateFixture();
+
+        ToolResult<SendPreview> result = await fixture.Application.PrepareAsync(
+            "personal", Draft(fixture), "idem-mode", "session-a", CancellationToken.None);
+
+        Assert.That(result.Data!.SendMode, Is.EqualTo(SendMode.ConfirmDialog));
+    }
+
+    [Test]
+    public async Task DraftsPrepareRequiresImapBeforeComposing()
+    {
+        using var fixture = CreateFixture(store: new FakeAccountStore
+        {
+            Profile = DraftsProfile() with { Imap = null }
+        });
+
+        ToolResult<SendPreview> result = await fixture.Application.PrepareAsync(
+            "personal", Draft(fixture), "idem-drafts-noimap", "session-a", CancellationToken.None);
+
+        AssertFailure(result, "imap.not_configured", ErrorCategory.Capability);
+        Assert.That(fixture.Composer.Calls, Is.Zero,
+            "The IMAP requirement must fail prepare before any composition work.");
+    }
+
+    [Test]
+    public async Task DraftsPrepareWithoutSmtpStillSucceedsAndAnnouncesDraftsMode()
+    {
+        // The drafts mode never delivers over SMTP, so a missing SMTP endpoint
+        // must not block preparing a draft for the Drafts folder.
+        using var fixture = CreateFixture(store: new FakeAccountStore
+        {
+            Profile = DraftsProfile() with { Smtp = null }
+        });
+
+        ToolResult<SendPreview> result = await fixture.Application.PrepareAsync(
+            "personal", Draft(fixture), "idem-drafts", "session-a", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Ok, Is.True, result.Error?.Message);
+            Assert.That(result.Data!.SendMode, Is.EqualTo(SendMode.Drafts));
+        });
+    }
+
+    [Test]
+    public async Task DraftsCommitSkipsApprovalSavesOnceAndNeverDelivers()
+    {
+        using var fixture = CreateFixture(store: new FakeAccountStore { Profile = DraftsProfile() });
+        var draft = Draft(fixture);
+        CancellationToken token = CancellationToken.None;
+
+        SendPreview preview = (await fixture.Application.PrepareAsync(
+            "personal", draft, "idem-drafts-1", "session-a", token)).Data!;
+        var expectedMime = fixture.Composer.Mime.ToArray();
+        ToolResult<SendStatus> first = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", token);
+        ToolResult<SendStatus> second = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", token);
+        ToolResult<SendStatus> status = await fixture.Application.GetStatusAsync(
+            "personal", "idem-drafts-1", token);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(first.Ok, Is.True, first.Error?.Message);
+            Assert.That(first.Data!.State, Is.EqualTo(SendState.Drafted));
+            Assert.That(first.Data.AttemptedAt, Is.Not.Null);
+            Assert.That(first.Data.CompletedAt, Is.Not.Null);
+            Assert.That(second.Ok, Is.False,
+                "The one-time token must never re-save the same draft.");
+            Assert.That(fixture.DraftStore.SaveCount, Is.EqualTo(1));
+            Assert.That(fixture.Smtp.SendCount, Is.Zero,
+                "The drafts mode must never touch SMTP.");
+            Assert.That(fixture.Approver.Seen, Is.Empty,
+                "Nothing is delivered in drafts mode, so the local approval dialog must be skipped.");
+            Assert.That(fixture.DraftStore.LastMessage!.AccountId, Is.EqualTo("personal"));
+            Assert.That(fixture.DraftStore.LastMessage.MessageId, Is.EqualTo("<message-1@example.com>"));
+            Assert.That(fixture.DraftStore.LastMimeSnapshot, Is.EqualTo(expectedMime));
+            Assert.That(fixture.DraftStore.LastMessage.MimeMessage, Has.All.Zero,
+                "MIME bytes must be zeroed after the draft is saved.");
+            Assert.That(status.Data!.State, Is.EqualTo(SendState.Drafted));
+            Assert.That(fixture.Vault.LastLeaseIsDisposed, Is.True);
+        });
+    }
+
+    [Test]
+    public async Task DraftsCommitMapsTransportOutcomesToTerminalStates()
+    {
+        using var failedFixture = CreateFixture(
+            store: new FakeAccountStore { Profile = DraftsProfile() },
+            draftStore: new FakeDraftStore
+            {
+                Outcome = SendTransportOutcome.Failed(new ToolError(
+                    "drafts.folder_not_found", ErrorCategory.Capability,
+                    "The Drafts folder was not found.", false, null, null))
+            });
+        var failedPreview = await PrepareAsync(failedFixture, "idem-drafts-failed", "session-a");
+
+        ToolResult<SendStatus> failed = await failedFixture.Application.CommitAsync(
+            failedPreview.ConfirmationToken, "session-a", CancellationToken.None);
+        ToolResult<SendStatus> failedStatus = await failedFixture.Application.GetStatusAsync(
+            "personal", "idem-drafts-failed", CancellationToken.None);
+
+        using var unknownFixture = CreateFixture(
+            store: new FakeAccountStore { Profile = DraftsProfile() },
+            draftStore: new FakeDraftStore { Outcome = SendTransportOutcome.Indeterminate() });
+        var unknownPreview = await PrepareAsync(unknownFixture, "idem-drafts-unknown", "session-a");
+
+        ToolResult<SendStatus> unknown = await unknownFixture.Application.CommitAsync(
+            unknownPreview.ConfirmationToken, "session-a", CancellationToken.None);
+        ToolResult<SendStatus> unknownStatus = await unknownFixture.Application.GetStatusAsync(
+            "personal", "idem-drafts-unknown", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            AssertFailure(failed, "drafts.folder_not_found", ErrorCategory.Capability);
+            Assert.That(failedStatus.Data!.State, Is.EqualTo(SendState.Failed));
+            AssertFailure(unknown, "send.indeterminate", ErrorCategory.Transient);
+            Assert.That(unknownStatus.Data!.State, Is.EqualTo(SendState.Indeterminate));
+            Assert.That(failedFixture.DraftStore.SaveCount, Is.EqualTo(1));
+            Assert.That(unknownFixture.DraftStore.SaveCount, Is.EqualTo(1));
+            Assert.That(failedFixture.Smtp.SendCount, Is.Zero);
+            Assert.That(unknownFixture.Smtp.SendCount, Is.Zero);
+        });
+    }
+
+    [Test]
+    public async Task CommitBranchesOnTheAccountModeResolvedAtCommitTime()
+    {
+        // The mode is re-read from the account store at commit time (like every
+        // other account fact commit uses), so flipping the profile between the
+        // two phases flips the execution branch.
+        var store = new FakeAccountStore { Profile = DraftsProfile() };
+        using var fixture = CreateFixture(store: store);
+        SendPreview preview = await PrepareAsync(fixture, "idem-flip", "session-a");
+        store.Profile = Profile();
+
+        ToolResult<SendStatus> result = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Ok, Is.True, result.Error?.Message);
+            Assert.That(result.Data!.State, Is.EqualTo(SendState.Succeeded));
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1));
+            Assert.That(fixture.DraftStore.SaveCount, Is.Zero);
+            Assert.That(fixture.Approver.Seen, Has.Count.EqualTo(1));
+        });
+    }
+
+    [Test]
     public async Task FirstCommitSucceedsAndRepeatedCommitFails()
     {
         using var fixture = CreateFixture();
@@ -724,6 +876,8 @@ public class SendApplicationTests
         null,
         new EndpointSettings("smtp.example.com", 465, TlsMode.ImplicitTls));
 
+    private static AccountProfile DraftsProfile() => Profile() with { SendMode = SendMode.Drafts };
+
     private static Fixture CreateFixture(
         IAccountProfileStore? store = null,
         FakeVault? vault = null,
@@ -732,7 +886,8 @@ public class SendApplicationTests
         ISendLedger? ledger = null,
         IPreparedSendStore? preparedStore = null,
         Action<FakeSmtpGateway>? smtpConfiguration = null,
-        FakeSendApprover? approver = null)
+        FakeSendApprover? approver = null,
+        FakeDraftStore? draftStore = null)
     {
         var smtpGateway = smtp ?? new FakeSmtpGateway();
         smtpConfiguration?.Invoke(smtpGateway);
@@ -743,7 +898,8 @@ public class SendApplicationTests
             smtpGateway,
             ledger,
             preparedStore,
-            approver ?? new FakeSendApprover());
+            approver ?? new FakeSendApprover(),
+            draftStore ?? new FakeDraftStore());
     }
 
     private static void AssertFailure<T>(ToolResult<T> result, string code, ErrorCategory category)
@@ -772,7 +928,8 @@ public class SendApplicationTests
             FakeSmtpGateway smtp,
             ISendLedger? ledger,
             IPreparedSendStore? preparedStore,
-            FakeSendApprover approver)
+            FakeSendApprover approver,
+            FakeDraftStore draftStore)
         {
             Temp = new TemporaryDirectory();
             Time = new MutableTimeProvider(Now);
@@ -783,6 +940,7 @@ public class SendApplicationTests
             Composer = composer;
             Smtp = smtp;
             Approver = approver;
+            DraftStore = draftStore;
             PreparedStore = preparedStore ?? new MemoryPreparedSendStore(Time);
             Ledger = ledger ?? new JsonSendLedger(Temp.Path);
 
@@ -795,6 +953,7 @@ public class SendApplicationTests
                 Vault,
                 Composer,
                 Smtp,
+                DraftStore,
                 Codec,
                 PreparedStore,
                 Ledger,
@@ -816,6 +975,7 @@ public class SendApplicationTests
         public FakeComposer Composer { get; }
         public FakeSmtpGateway Smtp { get; }
         public FakeSendApprover Approver { get; }
+        public FakeDraftStore DraftStore { get; }
         public IPreparedSendStore PreparedStore { get; }
         public ISendLedger Ledger { get; }
         public SendApplication Application { get; }
@@ -860,7 +1020,7 @@ public class SendApplicationTests
 
     private sealed class FakeAccountStore : IAccountProfileStore
     {
-        public AccountProfile? Profile { get; init; }
+        public AccountProfile? Profile { get; set; }
         public Task<AccountProfile?> GetAsync(string id, CancellationToken cancellationToken) =>
             Task.FromResult(Profile is not null && Profile.Id == id ? Profile : null);
         public Task<IReadOnlyList<AccountProfile>> ListAsync(CancellationToken cancellationToken) =>
@@ -955,6 +1115,28 @@ public class SendApplicationTests
             LastMimeSnapshot = message.MimeMessage.ToArray();
             if (Exception is not null)
                 return Task.FromException<SendTransportOutcome>(Exception);
+            return Task.FromResult(Outcome);
+        }
+    }
+
+    private sealed class FakeDraftStore : IDraftMessageStore
+    {
+        public SendTransportOutcome Outcome { get; set; } = SendTransportOutcome.Succeeded();
+        public int SaveCount { get; private set; }
+        public PreparedOutgoingMessage? LastMessage { get; private set; }
+        public byte[]? LastMimeSnapshot { get; private set; }
+        public AccountProfile? LastProfile { get; private set; }
+
+        public Task<SendTransportOutcome> SaveAsync(
+            AccountProfile profile,
+            PasswordCredentialLease credential,
+            PreparedOutgoingMessage message,
+            CancellationToken cancellationToken)
+        {
+            SaveCount++;
+            LastProfile = profile;
+            LastMessage = message;
+            LastMimeSnapshot = message.MimeMessage.ToArray();
             return Task.FromResult(Outcome);
         }
     }
@@ -1099,6 +1281,7 @@ public class MemoryPreparedSendStoreTests
         [],
         [],
         [],
+        SendMode.ConfirmDialog,
         null,
         null,
         0,

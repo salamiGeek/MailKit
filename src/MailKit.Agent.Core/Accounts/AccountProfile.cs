@@ -18,6 +18,19 @@ public enum AuthenticationKind
     OAuth2
 }
 
+/// <summary>
+/// How a confirmed send commit executes for one account: deliver over SMTP after
+/// the local human-approval dialog (<see cref="ConfirmDialog"/>), or append the
+/// composed message to the account's IMAP Drafts folder for human review and
+/// manual sending (<see cref="Drafts"/> — the agent can never deliver in that mode).
+/// </summary>
+[JsonConverter(typeof(LowerSnakeCaseEnumConverter<SendMode>))]
+public enum SendMode
+{
+    ConfirmDialog,
+    Drafts
+}
+
 public sealed record EndpointSettings(
     [property: JsonPropertyName("host")] string Host,
     [property: JsonPropertyName("port")] int Port,
@@ -30,4 +43,5 @@ public sealed record AccountProfile(
     [property: JsonPropertyName("authentication")] AuthenticationKind Authentication,
     [property: JsonPropertyName("imap")] EndpointSettings? Imap,
     [property: JsonPropertyName("pop3")] EndpointSettings? Pop3,
-    [property: JsonPropertyName("smtp")] EndpointSettings? Smtp);
+    [property: JsonPropertyName("smtp")] EndpointSettings? Smtp,
+    [property: JsonPropertyName("send_mode")] SendMode SendMode = SendMode.ConfirmDialog);

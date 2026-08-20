@@ -10,5 +10,11 @@ public enum SendState
     Attempting,
     Succeeded,
     Failed,
-    Indeterminate
+    Indeterminate,
+    /// <summary>
+    /// Terminal state for the drafts send mode: the prepared message was appended
+    /// to the account's Drafts folder and nothing was delivered. The record is
+    /// never re-invoked; sending the draft is the human's manual act.
+    /// </summary>
+    Drafted
 }

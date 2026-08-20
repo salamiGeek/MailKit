@@ -88,6 +88,11 @@ public class ToolSchemaTests
                 .GetProperty("properties").GetProperty("tls")
                 .GetProperty("enum").EnumerateArray().Select(item => item.GetString()),
             Is.EquivalentTo(new[] { "plain", "start_tls", "implicit_tls" }));
+        Assert.That(
+            profileSchema.GetProperty("properties").GetProperty("send_mode")
+                .GetProperty("enum").EnumerateArray().Select(item => item.GetString()),
+            Is.EquivalentTo(new[] { "confirm_dialog", "drafts" }),
+            "account_profile_put must expose the typed send_mode enum.");
     }
 
     [Test]
@@ -112,6 +117,34 @@ public class ToolSchemaTests
                 requestSchema.GetProperty("required").EnumerateArray()
                     .Select(item => item.GetString()),
                 Is.EqualTo(new[] { "confirmation_token" }));
+        });
+    }
+
+    [Test]
+    public async Task SendPrepareSchemaAnnouncesTheSendMode()
+    {
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        var tools = await _server!.Client.ListToolsAsync(cancellationToken: cancellation.Token);
+        var prepareTool = tools.Single(tool => tool.Name == "send_prepare");
+
+        var previewSchema = prepareTool.ReturnJsonSchema!.Value
+            .GetProperty("properties")
+            .GetProperty("data")
+            .GetProperty("properties");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                previewSchema.EnumerateObject().Select(property => property.Name),
+                Does.Contain("send_mode"),
+                "send_prepare's preview must announce how a commit will execute.");
+            Assert.That(
+                previewSchema.GetProperty("send_mode")
+                    .GetProperty("enum").EnumerateArray().Select(item => item.GetString()),
+                Is.EquivalentTo(new[] { "confirm_dialog", "drafts" }));
+            Assert.That(
+                previewSchema.GetProperty("send_mode").ToString(),
+                Does.Not.Contain("password").IgnoreCase);
         });
     }
 

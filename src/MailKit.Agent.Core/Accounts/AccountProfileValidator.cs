@@ -28,6 +28,8 @@ public static class AccountProfileValidator
             issues.Add($"username: must be {MaxUsernameLength} characters or fewer");
         if (!Enum.IsDefined(profile.Authentication))
             issues.Add("authentication: invalid value");
+        if (!Enum.IsDefined(profile.SendMode))
+            issues.Add("send_mode: invalid value");
         if (profile.Imap is null && profile.Pop3 is null && profile.Smtp is null)
             issues.Add("endpoints: at least one endpoint is required");
 

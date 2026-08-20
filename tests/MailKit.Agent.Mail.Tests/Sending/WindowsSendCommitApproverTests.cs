@@ -1,4 +1,5 @@
 using System.Globalization;
+using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Sending;
 using MailKit.Agent.Mail.Sending;
 
@@ -176,6 +177,7 @@ public class WindowsSendCommitApproverTests
 		["Alice <alice@example.com>"],
 		["carol@example.com"],
 		["hidden@example.com"],
+		SendMode.ConfirmDialog,
 		"Fixture subject",
 		"fixture body preview",
 		2,

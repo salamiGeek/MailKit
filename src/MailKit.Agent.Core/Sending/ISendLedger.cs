@@ -15,7 +15,7 @@ public interface ISendLedger
 
     /// <summary>
     /// Applies one allowed state transition
-    /// (<c>Prepared -> Attempting</c> or <c>Attempting -> Succeeded | Failed | Indeterminate</c>)
+    /// (<c>Prepared -> Attempting</c> or <c>Attempting -> Succeeded | Failed | Indeterminate | Drafted</c>)
     /// and returns the updated entry. Disallowed transitions, terminal records, and
     /// unknown records are rejected. An <c>Attempting</c> record written by an earlier
     /// process loads as terminal <c>Indeterminate</c>.

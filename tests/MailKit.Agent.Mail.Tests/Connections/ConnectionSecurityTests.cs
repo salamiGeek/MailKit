@@ -518,7 +518,7 @@ public sealed class ConnectionSecurityTests
             ["alice@example.test"],
             new SendPreview(
                 "prep-1", "personal", "<id-1@mailkit-agent.local>", null,
-                [], [], [], "Gate wiring", null, 0, [],
+                [], [], [], SendMode.ConfirmDialog, "Gate wiring", null, 0, [],
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(10),
                 new string('c', 64), new string('d', 64), string.Empty),
             new string('b', 64),

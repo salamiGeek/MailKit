@@ -1,3 +1,4 @@
+using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Sending;
 
 namespace MailKit.Agent.Core.Tests.Sending;
@@ -44,6 +45,7 @@ public class SendCommitApproverTests
         ["to@example.test"],
         [],
         [],
+        SendMode.ConfirmDialog,
         null,
         null,
         0,

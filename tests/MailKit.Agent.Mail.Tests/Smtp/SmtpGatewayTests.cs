@@ -373,6 +373,7 @@ public sealed class SmtpGatewayTests
         [],
         [],
         [],
+        SendMode.ConfirmDialog,
         null,
         null,
         0,

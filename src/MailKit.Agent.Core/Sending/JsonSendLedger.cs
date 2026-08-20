@@ -174,6 +174,9 @@ public sealed class JsonSendLedger : ISendLedger
             (SendState.Attempting, SendState.Succeeded) => true,
             (SendState.Attempting, SendState.Failed) => true,
             (SendState.Attempting, SendState.Indeterminate) => true,
+            // Terminal outcome of a drafts-mode commit: the message was appended to
+            // the Drafts folder and nothing was delivered; the record is final.
+            (SendState.Attempting, SendState.Drafted) => true,
             _ => false
         };
 
