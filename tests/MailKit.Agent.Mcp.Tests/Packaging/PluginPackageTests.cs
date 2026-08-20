@@ -185,6 +185,31 @@ public class PluginPackageTests
 	}
 
 	[Test]
+	public void UserDocsAndSkillDiscloseTheLocalHumanApprovalGate()
+	{
+		// The hard server-side approval gate changes observable user behavior, so
+		// the docs and the skill must disclose it in lockstep with the code.
+		var skill = MailboxSkillText;
+
+		Assert.Multiple(() =>
+		{
+			Assert.That(GettingStartedText, Does.Contain("本机确认对话框"),
+				"getting-started.md must tell users a local confirmation dialog appears at commit.");
+			Assert.That(GettingStartedText, Does.Contain("send.approval_declined"),
+				"getting-started.md must document the stable decline error code.");
+			Assert.That(GettingStartedText, Does.Contain("被拒绝不消耗确认令牌"),
+				"getting-started.md must state that a declined commit keeps the token usable.");
+			Assert.That(CapabilityMatrixText, Does.Contain("本机人工批准"),
+				"capability-matrix.md must note the local human-approval gate on the send row.");
+			Assert.That(CapabilityMatrixText, Does.Contain("send.approval_declined"));
+			Assert.That(skill, Does.Contain("local confirmation dialog"),
+				"SKILL.md must tell the model the server enforces a local confirmation dialog.");
+			Assert.That(skill, Does.Contain("still show the complete preview"),
+				"SKILL.md must keep the chat-side preview obligation alongside the server gate.");
+		});
+	}
+
+	[Test]
 	public void CapabilityMatrixMarksSupportedRowsOnlyWithNamedAutomatedTests()
 	{
 		var supportedRows = CapabilityMatrixText

@@ -16,6 +16,7 @@ using MailKit.Agent.Mail.Connections;
 using MailKit.Agent.Mail.Imap;
 using MailKit.Agent.Mail.Mime;
 using MailKit.Agent.Mail.Pop3;
+using MailKit.Agent.Mail.Sending;
 using MailKit.Agent.Mail.Smtp;
 using MailKit.Agent.Mcp.Testing;
 using MailKit.Agent.Mcp.Tools;
@@ -112,6 +113,14 @@ public static class McpServerHost
 				serviceProvider.GetRequiredService<TimeProvider>()));
 		services.AddSingleton<ISendLedger>(_ => new JsonSendLedger(dataDirectory));
 		services.AddSingleton<IPreparedSendStore, MemoryPreparedSendStore>();
+		// Hard local human-approval gate for send commits: the MCP caller cannot
+		// produce this factor on its own. Debug test-mode registrations may override
+		// it with the automatic approver (see TestGatewayRegistration); Release
+		// builds reject test mode, so production always keeps the gate.
+		services.AddSingleton<ISendCommitApprover>(_ =>
+			OperatingSystem.IsWindows()
+				? new WindowsSendCommitApprover()
+				: new UnavailableSendCommitApprover());
 		services.AddSingleton<MailServiceConnector>();
 		services.AddSingleton<ConnectionGate>();
 		services.AddSingleton<MimePartLocator>();
