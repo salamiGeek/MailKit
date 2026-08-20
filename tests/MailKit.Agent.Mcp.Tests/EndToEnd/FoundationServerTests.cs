@@ -424,6 +424,138 @@ public class FoundationServerTests
 	}
 
 	[Test]
+	public async Task DraftsCommitSurvivesServerProcessRestartOverStdio()
+	{
+#if !DEBUG
+		// Same trade-off as the fixture drafts e2e: the fake draft store exists only
+		// in DEBUG builds and Release rejects MAILKIT_AGENT_TEST_MODE by design.
+		Assert.Ignore("fake draft store requires a Debug server build; MAILKIT_AGENT_TEST_MODE is rejected by Release builds");
+#endif
+		var repositoryRoot = FindRepositoryRoot();
+		// One shared data directory across TWO server processes: prepare in the
+		// first, commit in the second. This reproduces stdio hosts that restart the
+		// server (or proxy chains that spawn one process per call), where a
+		// per-process confirmation key would reject every token as invalid.
+		string dataDirectory = Path.Combine(
+			Path.GetTempPath(),
+			"mailkit-agent-restart-tests-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			Directory.CreateDirectory(dataDirectory);
+			string confirmationToken;
+			await using (var firstServer = await StdioMcpServer.StartAsync(
+				"MailKit Agent restart prepare",
+				repositoryRoot,
+				[ResolveServerAssembly(repositoryRoot)],
+				testFixtures: ["credential", "drafts"],
+				sharedDataDirectory: dataDirectory))
+			{
+				using var cancellation = new CancellationTokenSource(TestTimeout);
+
+				var put = await firstServer.Client.CallToolAsync(
+					"account_profile_put",
+					new Dictionary<string, object?>
+					{
+						["profile"] = new Dictionary<string, object?>
+						{
+							["id"] = "e2e-restart",
+							["display_name"] = "Restart Account",
+							["username"] = "restart@example.test",
+							["authentication"] = "password",
+							["send_mode"] = "drafts",
+							["imap"] = Endpoint("imap.example.test", 993),
+							["pop3"] = null,
+							["smtp"] = null
+						}
+					},
+					cancellationToken: cancellation.Token);
+				Assert.That(
+					put.StructuredContent!.Value.GetProperty("ok").GetBoolean(),
+					Is.True);
+
+				var prepared = await firstServer.Client.CallToolAsync(
+					"send_prepare",
+					new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+					{
+						["account_id"] = "e2e-restart",
+						["draft"] = new Dictionary<string, object?>
+						{
+							["to"] = new object[] { new Dictionary<string, object?>
+							{
+								["address"] = "recipient@example.test"
+							} },
+							["subject"] = "Fixture restart e2e",
+							["text_body"] = "Fixture restart body."
+						},
+						["idempotency_key"] = "e2e-restart-key-1"
+					} },
+					cancellationToken: cancellation.Token);
+				Assert.That(
+					prepared.StructuredContent!.Value.GetProperty("ok").GetBoolean(),
+					Is.True);
+				confirmationToken = prepared.StructuredContent.Value
+					.GetProperty("data")
+					.GetProperty("confirmation_token")
+					.GetString()!;
+				Assert.That(confirmationToken, Is.Not.Null.And.Not.Empty);
+			}
+
+			await using var secondServer = await StdioMcpServer.StartAsync(
+				"MailKit Agent restart commit",
+				repositoryRoot,
+				[ResolveServerAssembly(repositoryRoot)],
+				testFixtures: ["credential", "drafts"],
+				sharedDataDirectory: dataDirectory);
+			using var commitCancellation = new CancellationTokenSource(TestTimeout);
+
+			var committed = await secondServer.Client.CallToolAsync(
+				"send_commit",
+				new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+				{
+					["confirmation_token"] = confirmationToken
+				} },
+				cancellationToken: commitCancellation.Token);
+			Assert.Multiple(() =>
+			{
+				Assert.That(
+					committed.StructuredContent!.Value.GetProperty("ok").GetBoolean(),
+					Is.True,
+					"A commit in a fresh server process must succeed with the token " +
+					"issued by the previous process.");
+				Assert.That(
+					committed.StructuredContent.Value.GetProperty("data")
+						.GetProperty("state").GetString(),
+					Is.EqualTo("drafted"));
+			});
+
+			var status = await secondServer.Client.CallToolAsync(
+				"send_status",
+				new Dictionary<string, object?> { ["request"] = new Dictionary<string, object?>
+				{
+					["account_id"] = "e2e-restart",
+					["idempotency_key"] = "e2e-restart-key-1"
+				} },
+				cancellationToken: commitCancellation.Token);
+			Assert.That(
+				status.StructuredContent!.Value.GetProperty("data")
+					.GetProperty("state").GetString(),
+				Is.EqualTo("drafted"));
+
+			string[] saves = File.ReadAllLines(Path.Combine(
+				dataDirectory, "test-fixtures", "draft-saves.jsonl"));
+			Assert.That(saves.Length, Is.EqualTo(1),
+				"The restarted commit must save the draft exactly once.");
+			var standardError = string.Join(Environment.NewLine, secondServer.StandardError);
+			Assert.That(standardError, Does.Not.Contain("Exception"));
+		}
+		finally
+		{
+			if (Directory.Exists(dataDirectory))
+				Directory.Delete(dataDirectory, recursive: true);
+		}
+	}
+
+	[Test]
 	public async Task PublishedReleaseOutputRejectsTestMode()
     {
         var repositoryRoot = FindRepositoryRoot();

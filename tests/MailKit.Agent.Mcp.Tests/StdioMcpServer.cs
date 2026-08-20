@@ -7,10 +7,12 @@ internal sealed class StdioMcpServer : IAsyncDisposable
 {
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(15);
     private readonly ConcurrentQueue<string> _standardError = new();
+    private readonly bool ownsDataDirectory;
 
-    private StdioMcpServer(string dataDirectory)
+    private StdioMcpServer(string dataDirectory, bool ownsDataDirectory)
     {
         DataDirectory = dataDirectory;
+        this.ownsDataDirectory = ownsDataDirectory;
     }
 
     public McpClient Client { get; private set; } = null!;
@@ -23,13 +25,17 @@ internal sealed class StdioMcpServer : IAsyncDisposable
         string name,
         string workingDirectory,
         string[] arguments,
-        IReadOnlyCollection<string>? testFixtures = null)
+        IReadOnlyCollection<string>? testFixtures = null,
+        string? sharedDataDirectory = null)
     {
-        var dataDirectory = Path.Combine(
+        // A shared directory is caller-managed: it survives disposal so a second
+        // server instance (simulating a process restart) can reuse its state.
+        bool ownsDataDirectory = sharedDataDirectory is null;
+        var dataDirectory = sharedDataDirectory ?? Path.Combine(
             Path.GetTempPath(),
             "mailkit-agent-mcp-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dataDirectory);
-        var server = new StdioMcpServer(dataDirectory);
+        var server = new StdioMcpServer(dataDirectory, ownsDataDirectory);
 
         var serverArguments = arguments.ToList();
         if (testFixtures is { Count: > 0 })
@@ -61,7 +67,8 @@ internal sealed class StdioMcpServer : IAsyncDisposable
         }
         catch
         {
-            Directory.Delete(dataDirectory, recursive: true);
+            if (ownsDataDirectory)
+                Directory.Delete(dataDirectory, recursive: true);
             throw;
         }
     }
@@ -79,7 +86,7 @@ internal sealed class StdioMcpServer : IAsyncDisposable
         }
         finally
         {
-            if (Directory.Exists(DataDirectory))
+            if (ownsDataDirectory && Directory.Exists(DataDirectory))
                 Directory.Delete(DataDirectory, recursive: true);
         }
     }

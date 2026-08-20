@@ -3,13 +3,17 @@ using System.Security.Cryptography;
 namespace MailKit.Agent.Mcp;
 
 /// <summary>
-/// A random 256-bit per-process session identity used when the MCP transport does
-/// not expose a session ID (stdio). It binds each <c>send_prepare</c>/<c>send_commit</c>
-/// pair to one agent process. The value is never logged and never persisted; it
-/// reaches clients only inside the HMAC-integrity-protected, one-time confirmation
-/// token payload, where it is opaque without the per-process key and confers no
-/// usable capability. The payload itself stays secret-free (it never carries
-/// recipients, subject, body, attachment names, or MIME bytes).
+/// The session identity that binds each <c>send_prepare</c>/<c>send_commit</c> pair.
+/// The default constructor derives a random 256-bit per-process identity; the host
+/// instead composes the class with the persisted installation identity from
+/// <c>SendConfirmationSecrets</c> so a commit in a restarted server process still
+/// satisfies the session check for a preparation made by its predecessor (bounded
+/// by the confirmation token's TTL). The value is never logged and never persisted
+/// in the clear; it reaches clients only inside the HMAC-integrity-protected,
+/// one-time confirmation token payload, where it is opaque without the data
+/// directory's protected key and confers no usable capability. The payload itself
+/// stays secret-free (it never carries recipients, subject, body, attachment
+/// names, or MIME bytes).
 /// </summary>
 public sealed class StdioSessionIdentity
 {
@@ -24,6 +28,12 @@ public sealed class StdioSessionIdentity
         {
             CryptographicOperations.ZeroMemory(identifier);
         }
+    }
+
+    public StdioSessionIdentity(string id)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        Id = id;
     }
 
     public string Id { get; }

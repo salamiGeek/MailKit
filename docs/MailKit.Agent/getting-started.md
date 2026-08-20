@@ -109,7 +109,7 @@ mailkit-agent account credential delete --account <account-id>
 发送始终分两步完成，执行方式由账户的 `send_mode` 决定（默认 `confirm_dialog`）：
 
 1. `send_prepare`：校验草稿（收件人、主题、正文、附件路径），返回脱敏预览（收件人、主题、正文前 200 个字符、附件文件名、`send_mode` 执行方式）和一次性 `confirmation_token`。此阶段不获取凭据，也不建立传输连接。
-2. 用户查看完整预览并明确确认后，调用 `send_commit`，只提交 `confirmation_token`。确认令牌在 10 分钟后过期，且只能使用一次。
+2. 用户查看完整预览并明确确认后，调用 `send_commit`，只提交 `confirmation_token`。确认令牌在 10 分钟后过期，且只能使用一次。令牌的签名密钥与会话标识按数据目录持久保存（Windows 上以 DPAPI 保护，密钥从不明文落盘），因此 `send_prepare` 与 `send_commit` 之间服务器进程重启（例如宿主对每次调用拉起新的 stdio 进程）不影响提交；非 Windows 平台密钥保持每进程随机，重启会使未提交的令牌失效。
 3. `send_commit` 按提交时账户的当前 `send_mode` 执行：
    - `confirm_dialog`（默认，即投递模式）：投递前会弹出本机确认对话框，Windows 桌面上必须由人工在对话框中批准后才会真正投递（对话框完整展示收件人、密送收件人、主题、正文预览、附件与过期时间，且仅在本机显示）。这是服务器内部强制执行的硬性门槛，不是调用方约定。
    - `drafts`（草稿模式）：提交不会投递邮件，也不会弹出本机批准对话框——服务器把编写完成的邮件（带 `\Draft` 标记）IMAP APPEND 到该账户的草稿箱；代理在此模式下永远无法投递。之后的流程是：预览→批准→保存到草稿箱→用户在邮件客户端审阅/修改/自行发送。若用户要求修改，就再次 `send_prepare`/`send_commit` 生成新草稿，旧草稿由用户自行管理。保存成功后 `send_status` 报告终态 `drafted`；找不到草稿文件夹时返回稳定的 `drafts.folder_not_found` 错误（ Capability 类别）。

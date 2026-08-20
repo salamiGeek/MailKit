@@ -35,7 +35,7 @@ public class SendToolsTests
             IdempotencyKey);
 
         var result = await SendTools.PrepareAsync(
-            request, server: null, new StdioSessionIdentity(), harness.Application, CancellationToken.None);
+            request, new StdioSessionIdentity(), harness.Application, CancellationToken.None);
 
         Assert.Multiple(() =>
         {
@@ -56,12 +56,11 @@ public class SendToolsTests
         var harness = CreateHarness();
         var identity = new StdioSessionIdentity();
         var prepared = await SendTools.PrepareAsync(
-            PrepareRequest(), server: null, identity, harness.Application, CancellationToken.None);
+            PrepareRequest(), identity, harness.Application, CancellationToken.None);
         Assert.That(prepared.Ok, Is.True);
 
         var committed = await SendTools.CommitAsync(
             new SendCommitRequest(prepared.Data!.ConfirmationToken),
-            server: null,
             identity,
             harness.Application,
             CancellationToken.None);
@@ -74,7 +73,6 @@ public class SendToolsTests
 
         var repeated = await SendTools.CommitAsync(
             new SendCommitRequest(prepared.Data!.ConfirmationToken),
-            server: null,
             identity,
             harness.Application,
             CancellationToken.None);
@@ -95,7 +93,6 @@ public class SendToolsTests
 
         var result = await SendTools.CommitAsync(
             new SendCommitRequest("not-a-confirmation-token"),
-            server: null,
             new StdioSessionIdentity(),
             harness.Application,
             CancellationToken.None);
@@ -114,7 +111,6 @@ public class SendToolsTests
         var harness = CreateHarness();
         var prepared = await SendTools.PrepareAsync(
             PrepareRequest(),
-            server: null,
             new StdioSessionIdentity(),
             harness.Application,
             CancellationToken.None);
@@ -122,7 +118,6 @@ public class SendToolsTests
 
         var result = await SendTools.CommitAsync(
             new SendCommitRequest(prepared.Data!.ConfirmationToken),
-            server: null,
             new StdioSessionIdentity(),
             harness.Application,
             CancellationToken.None);
@@ -141,10 +136,9 @@ public class SendToolsTests
         var harness = CreateHarness();
         var identity = new StdioSessionIdentity();
         var prepared = await SendTools.PrepareAsync(
-            PrepareRequest(), server: null, identity, harness.Application, CancellationToken.None);
+            PrepareRequest(), identity, harness.Application, CancellationToken.None);
         await SendTools.CommitAsync(
             new SendCommitRequest(prepared.Data!.ConfirmationToken),
-            server: null,
             identity,
             harness.Application,
             CancellationToken.None);
@@ -168,7 +162,7 @@ public class SendToolsTests
         var harness = CreateHarness();
         var identity = new StdioSessionIdentity();
         var prepared = await SendTools.PrepareAsync(
-            PrepareRequest(), server: null, identity, harness.Application, CancellationToken.None);
+            PrepareRequest(), identity, harness.Application, CancellationToken.None);
         Assert.That(prepared.Ok, Is.True);
 
         string payloadJson = DecodeConfirmationTokenPayload(prepared.Data!.ConfirmationToken);
@@ -193,7 +187,6 @@ public class SendToolsTests
         // useless to another one (also covered by CommitRejectsTokensIssuedToAnotherSession).
         var stolen = await SendTools.CommitAsync(
             new SendCommitRequest(prepared.Data.ConfirmationToken),
-            server: null,
             new StdioSessionIdentity(),
             harness.Application,
             CancellationToken.None);
@@ -245,12 +238,11 @@ public class SendToolsTests
         try
         {
             var prepared = await SendTools.PrepareAsync(
-                PrepareRequest(), server: null, identity, application, CancellationToken.None);
+                PrepareRequest(), identity, application, CancellationToken.None);
             Assert.That(prepared.Ok, Is.True, prepared.Error?.Message);
 
             var committed = await SendTools.CommitAsync(
                 new SendCommitRequest(prepared.Data!.ConfirmationToken),
-                server: null,
                 identity,
                 application,
                 CancellationToken.None);

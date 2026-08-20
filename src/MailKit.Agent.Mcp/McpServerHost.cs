@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using MailKit.Agent.Auth;
 using MailKit.Agent.Core.Accounts;
 using MailKit.Agent.Core.Applications;
 using MailKit.Agent.Core.Connections;
@@ -71,10 +72,9 @@ public static class McpServerHost
 			_ => new JsonAccountProfileStore(dataDirectory));
 		builder.Services.AddSingleton(vault);
 		builder.Services.AddSingleton(OperationPolicy.Default);
-		builder.Services.AddSingleton(TimeProvider.System);
-		builder.Services.AddSingleton<StdioSessionIdentity>();
-		ConfigureMailStorage(builder.Services, dataDirectory);
-		ConfigureMailRuntime(builder.Services, dataDirectory);
+			builder.Services.AddSingleton(TimeProvider.System);
+			ConfigureMailStorage(builder.Services, dataDirectory);
+			ConfigureMailRuntime(builder.Services, dataDirectory);
 #if DEBUG
 		if (requestedTestFixtures is { Count: > 0 })
 			TestGatewayRegistration.ConfigureServices(builder.Services, requestedTestFixtures);
@@ -100,20 +100,28 @@ public static class McpServerHost
 		ArgumentNullException.ThrowIfNull(services);
 		ArgumentException.ThrowIfNullOrWhiteSpace(dataDirectory);
 
-		// Independent random 256-bit keys per process start: cursors and uncommitted
-		// confirmations intentionally expire across restarts, while the send ledger
-		// preserves terminal and indeterminate delivery state. The keys are never
-		// logged, persisted, or returned to clients.
+		// Confirmation secrets are loaded once per data directory (DPAPI-protected
+		// on Windows, per-process random elsewhere) and the prepared sends are
+		// file-backed, so uncommitted confirmations SURVIVE server restarts within
+		// their TTL: stdio hosts may restart the server between tool calls, and a
+		// commit in the successor process must still verify the token, satisfy the
+		// session binding, and find the prepared message. The send ledger keeps its
+		// durable terminal/indeterminate delivery state as before.
+		SendConfirmationSecrets secrets = SendConfirmationSecrets.LoadOrCreate(dataDirectory);
 		services.AddSingleton<ICursorCodec>(serviceProvider =>
 			new HmacCursorCodec(
 				RandomNumberGenerator.GetBytes(32),
 				serviceProvider.GetRequiredService<TimeProvider>()));
 		services.AddSingleton<ISendConfirmationCodec>(serviceProvider =>
 			new HmacSendConfirmationCodec(
-				RandomNumberGenerator.GetBytes(32),
+				secrets.ConfirmationKey,
 				serviceProvider.GetRequiredService<TimeProvider>()));
 		services.AddSingleton<ISendLedger>(_ => new JsonSendLedger(dataDirectory));
-		services.AddSingleton<IPreparedSendStore, MemoryPreparedSendStore>();
+		services.AddSingleton<IPreparedSendStore>(serviceProvider =>
+			new FilePreparedSendStore(
+				dataDirectory,
+				serviceProvider.GetRequiredService<TimeProvider>()));
+		services.AddSingleton(new StdioSessionIdentity(secrets.SessionId));
 		// Hard local human-approval gate for send commits: the MCP caller cannot
 		// produce this factor on its own. Debug test-mode registrations may override
 		// it with the automatic approver (see TestGatewayRegistration); Release

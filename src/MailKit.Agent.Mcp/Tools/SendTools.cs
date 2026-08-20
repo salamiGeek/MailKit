@@ -33,7 +33,6 @@ public sealed class SendTools
             + "and the caller-chosen idempotency key ([A-Za-z0-9._-], up to 128 characters). "
             + "Local attachment paths must stay inside configured upload roots.")]
             SendPrepareRequest request,
-        McpServer server,
         StdioSessionIdentity sessionIdentity,
         SendApplication application,
         CancellationToken cancellationToken) =>
@@ -41,7 +40,7 @@ public sealed class SendTools
             request.AccountId,
             request.Draft,
             request.IdempotencyKey,
-            ResolveSessionId(server, sessionIdentity),
+            sessionIdentity.Id,
             cancellationToken);
 
     [McpServerTool(Name = "send_commit", UseStructuredContent = true)]
@@ -57,13 +56,12 @@ public sealed class SendTools
     public static Task<ToolResult<SendStatus>> CommitAsync(
         [Description("The one-time confirmation token returned by send_prepare.")]
             SendCommitRequest request,
-        McpServer server,
         StdioSessionIdentity sessionIdentity,
         SendApplication application,
         CancellationToken cancellationToken) =>
         application.CommitAsync(
             request.ConfirmationToken,
-            ResolveSessionId(server, sessionIdentity),
+            sessionIdentity.Id,
             cancellationToken);
 
     [McpServerTool(Name = "send_status", UseStructuredContent = true)]
@@ -77,7 +75,4 @@ public sealed class SendTools
         SendApplication application,
         CancellationToken cancellationToken) =>
         application.GetStatusAsync(request.AccountId, request.IdempotencyKey, cancellationToken);
-
-    internal static string ResolveSessionId(McpServer? server, StdioSessionIdentity sessionIdentity) =>
-        server?.SessionId ?? sessionIdentity.Id;
 }
