@@ -110,8 +110,9 @@ mailkit-agent account credential delete --account <account-id>
 2. 用户查看完整预览并明确确认后，调用 `send_commit`，只提交 `confirmation_token`。确认令牌在 10 分钟后过期，且只能使用一次。
 3. `send_commit` 在投递前会弹出本机确认对话框：Windows 桌面上必须由人工在对话框中批准后才会真正投递（对话框完整展示收件人、密送收件人、主题、正文预览、附件与过期时间，且仅在本机显示）。这是服务器内部强制执行的硬性门槛，不是调用方约定。
 
-- 在无交互桌面或非 Windows 主机上无法弹出本机确认对话框：`send_commit` 会直接返回稳定的 `send.approval_declined` 错误（可重试标记为否）。
-- 被拒绝不消耗确认令牌：拒绝只返回 `send.approval_declined`，不改写发送账本、不连接 SMTP；在令牌过期前，获得本机批准的再次提交仍可使用同一个 `confirmation_token` 完成发送。
+- 非 Windows 主机或没有交互桌面的会话（如无头服务会话）无法完成本机人工批准：`send_commit` 会快速返回稳定的 `send.approval_unavailable` 错误（Capability 类别），表示需要在前台交互会话中重试，而不是被人工拒绝。
+- 在交互桌面上，本机确认对话框会一直等待，直到人工作出选择或调用方取消；人工拒绝返回稳定的 `send.approval_declined` 错误。
+- 拒绝与批准不可用均不消耗确认令牌：不改写发送账本、不连接 SMTP；在令牌过期前，获得本机批准的再次提交仍可使用同一个 `confirmation_token` 完成发送。
 - 每次发送绑定调用方选择的 `idempotency_key`（字符集 `A-Za-z0-9._-`，最长 128）：同一密钥不会投递第二封邮件。
 - `send_status` 报告持久状态：`prepared`、`attempting`、`succeeded`、`failed`、`indeterminate`。
 - 结果未知的发送（`indeterminate`，例如投递中途连接断开）不会自动重试：先查询 `send_status`，再由用户决定如何处理。

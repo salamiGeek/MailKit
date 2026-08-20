@@ -1,3 +1,8 @@
+// DEBUG-only by design: this type is compiled out of Release binaries entirely so
+// production hosts cannot resolve it even by accident. Its sole reference
+// (TestGatewayRegistration) is likewise DEBUG-gated and additionally requires
+// MAILKIT_AGENT_TEST_MODE=1, which Release builds reject outright.
+#if DEBUG
 namespace MailKit.Agent.Core.Sending;
 
 /// <summary>
@@ -10,6 +15,8 @@ namespace MailKit.Agent.Core.Sending;
 public sealed class AutomaticSendCommitApprover : ISendCommitApprover
 {
 	/// <inheritdoc />
-	public ValueTask<bool> ApproveAsync(SendPreview preview, CancellationToken cancellationToken) =>
-		ValueTask.FromResult(true);
+	public ValueTask<SendApprovalOutcome> ApproveAsync(
+		SendPreview preview, CancellationToken cancellationToken) =>
+		ValueTask.FromResult(SendApprovalOutcome.Approved);
 }
+#endif

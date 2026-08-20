@@ -80,14 +80,18 @@ public sealed class MailRuntimeRegistrationTests
 
 			Assert.Multiple(() =>
 			{
+#if DEBUG
+				// In Release the automatic approver type is not compiled at all, so
+				// the risk this assertion guards only exists in Debug builds.
 				Assert.That(approver, Is.Not.InstanceOf<AutomaticSendCommitApprover>(),
 					"Production hosts must never register the automatic approver.");
+#endif
 				Assert.That(
 					approver,
 					Is.InstanceOf(OperatingSystem.IsWindows()
 						? typeof(WindowsSendCommitApprover)
 						: typeof(UnavailableSendCommitApprover)),
-					"Non-Windows or desktop-less hosts must decline sends deterministically.");
+					"Non-Windows or desktop-less hosts must report approval as unavailable.");
 				Assert.That(ApproverOf(application), Is.SameAs(approver),
 					"SendApplication must consume the registered approver singleton.");
 			});

@@ -294,10 +294,11 @@ public class SendToolsTests
     {
         public List<SendPreview> Approvals { get; } = [];
 
-        public ValueTask<bool> ApproveAsync(SendPreview preview, CancellationToken cancellationToken)
+        public ValueTask<SendApprovalOutcome> ApproveAsync(
+            SendPreview preview, CancellationToken cancellationToken)
         {
             Approvals.Add(preview);
-            return ValueTask.FromResult(true);
+            return ValueTask.FromResult(SendApprovalOutcome.Approved);
         }
     }
 

@@ -7,11 +7,18 @@ namespace MailKit.Agent.Mail.Sending;
 
 /// <summary>
 /// Windows implementation of the local human-approval gate for send commits.
-/// <see cref="ApproveAsync"/> shows a topmost Yes/No <c>MessageBoxW</c> that renders
-/// the exact redacted preview the caller prepared; only an explicit local Yes
-/// approves the delivery. The dialog contains no secrets: <see cref="SendPreview"/>
-/// is secret-free by construction and the confirmation token it carries is never
-/// rendered.
+/// <see cref="ApproveAsync"/> first PROBES the interactive input desktop
+/// (<c>OpenInputDesktop</c>; the handle is closed immediately): if the process has
+/// no input desktop — headless service session, disconnected session — the outcome
+/// is <see cref="SendApprovalOutcome.Unavailable"/> and NO dialog is attempted, so
+/// the caller fails fast with <c>send.approval_unavailable</c>. With an input
+/// desktop present, a topmost Yes/No <c>MessageBoxW</c> renders the exact redacted
+/// preview the caller prepared; the dialog pends until the operator answers or the
+/// caller's cancellation token fires (the box is dismissed via WM_CLOSE and the
+/// outcome resolves as declined). Only an explicit local Yes maps to
+/// <see cref="SendApprovalOutcome.Approved"/>. The dialog contains no secrets:
+/// <see cref="SendPreview"/> is secret-free by construction and the confirmation
+/// token it carries is never rendered.
 ///
 /// Threat model (honest): the dialog blocks casual or automated commit chaining —
 /// an MCP caller cannot chain prepare+commit in one unattended run because a human
@@ -29,19 +36,27 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 	private const uint MessageBoxIconWarning = 0x00000030;
 	private const uint MessageBoxFlags = MessageBoxTopmost | MessageBoxYesNo | MessageBoxIconWarning;
 	private const uint WmClose = 0x0010;
+	private const uint DesktopReadobjects = 0x0001;
 
 	/// <inheritdoc />
-	public async ValueTask<bool> ApproveAsync(
+	public async ValueTask<SendApprovalOutcome> ApproveAsync(
 		SendPreview preview, CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(preview);
 
-		// Defense in depth: production DI never registers this approver off
-		// Windows, and an unavailable interactive desktop must decline, not hang.
+		// Production DI never registers this approver off Windows, and without
+		// Windows there is no way to ask a human locally.
 		if (!OperatingSystem.IsWindows())
-			return false;
+			return SendApprovalOutcome.Unavailable;
+
+		// Probe-first fail fast: without an interactive input desktop nobody could
+		// ever see or answer the dialog, so report the environment as unavailable
+		// instead of attempting (or hanging on) a MessageBox.
+		if (!HasInputDesktop())
+			return SendApprovalOutcome.Unavailable;
+
 		if (cancellationToken.IsCancellationRequested)
-			return false;
+			return SendApprovalOutcome.Declined;
 
 		var dialog = new DialogSession(BuildApprovalText(preview));
 		using CancellationTokenRegistration registration =
@@ -56,8 +71,9 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 		thread.SetApartmentState(ApartmentState.STA);
 		thread.Start();
 
-		// The wait is bounded only by the caller's token: cancellation dismisses
-		// the box (WM_CLOSE by caption) and resolves as declined.
+		// With an input desktop present the wait is bounded only by the caller's
+		// token: cancellation dismisses the box (WM_CLOSE by caption) and resolves
+		// the outcome as declined.
 		return await dialog.Completion.Task.ConfigureAwait(false);
 	}
 
@@ -140,12 +156,28 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 		return builder.ToString();
 	}
 
+	/// <summary>
+	/// Returns true when this process has an interactive input desktop. The probe
+	/// opens the input desktop with read access and closes the handle immediately:
+	/// failure means the process runs on a non-interactive window station (for
+	/// example a headless service session) where nobody could answer a dialog.
+	/// </summary>
+	private static bool HasInputDesktop()
+	{
+		IntPtr desktop = OpenInputDesktop(0, inheritHandle: false, DesktopReadobjects);
+		if (desktop == IntPtr.Zero)
+			return false;
+
+		CloseDesktop(desktop);
+		return true;
+	}
+
 	private sealed class DialogSession(string text)
 	{
 		private readonly string text = text;
 		private int dialogThreadId;
 
-		public TaskCompletionSource<bool> Completion { get; } =
+		public TaskCompletionSource<SendApprovalOutcome> Completion { get; } =
 			new(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		public void Run()
@@ -158,13 +190,15 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 			}
 
 			int result = MessageBoxW(IntPtr.Zero, this.text, DialogTitle, MessageBoxFlags);
-			Completion.TrySetResult(result == IdYes);
+			Completion.TrySetResult(result == IdYes
+				? SendApprovalOutcome.Approved
+				: SendApprovalOutcome.Declined);
 		}
 
 		public void Cancel()
 		{
 			DismissVisibleDialog();
-			Completion.TrySetResult(false);
+			Completion.TrySetResult(SendApprovalOutcome.Declined);
 		}
 
 		private void DismissVisibleDialog()
@@ -206,4 +240,12 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 
 	[DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId", SetLastError = true)]
 	private static extern int GetCurrentThreadId();
+
+	[DllImport("user32.dll", EntryPoint = "OpenInputDesktop", SetLastError = true)]
+	private static extern IntPtr OpenInputDesktop(
+		uint flags, bool inheritHandle, uint desiredAccess);
+
+	[DllImport("user32.dll", EntryPoint = "CloseDesktop", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool CloseDesktop(IntPtr desktop);
 }

@@ -18,11 +18,12 @@ namespace MailKit.Agent.Core.Sending;
 /// <see cref="CommitAsync"/> first validates the one-time token cheaply (expiry,
 /// session, account, content hash), then requires a local human approval from
 /// <see cref="ISendCommitApprover"/> — a factor the MCP caller cannot produce on
-/// its own — BEFORE consuming the token: a declined or cancelled approval leaves
-/// the preparation intact for a later approved commit. Once approved, the commit
-/// consumes the token, writes the ledger <see cref="SendState.Attempting"/> record
-/// before any network I/O, acquires a fresh password lease, invokes SMTP exactly
-/// once, persists the returned terminal state, and disposes secrets and MIME bytes.
+/// its own — BEFORE consuming the token: a declined, unavailable, or cancelled
+/// approval leaves the preparation intact for a later approved commit. Once
+/// approved, the commit consumes the token, writes the ledger
+/// <see cref="SendState.Attempting"/> record before any network I/O, acquires a
+/// fresh password lease, invokes SMTP exactly once, persists the returned
+/// terminal state, and disposes secrets and MIME bytes.
 /// </summary>
 public sealed class SendApplication
 {
@@ -287,10 +288,10 @@ public sealed class SendApplication
                 "The send confirmation does not match the prepared message.", correlationId);
         }
 
-        bool approved;
+        SendApprovalOutcome approval;
         try
         {
-            approved = await sendApprover.ApproveAsync(peeked.Preview, cancellationToken)
+            approval = await sendApprover.ApproveAsync(peeked.Preview, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -306,11 +307,23 @@ public sealed class SendApplication
                 "The send commit failed.", correlationId);
         }
 
-        if (!approved)
+        if (approval != SendApprovalOutcome.Approved)
         {
-            return ValidationFailure<SendStatus>(
-                "send.approval_declined",
-                "The send was not approved locally.", correlationId);
+            // Both non-approved outcomes keep the one-time token and the ledger
+            // untouched; only the stable error differs so operators can tell an
+            // environment problem (run interactively) from a human refusal.
+            return approval == SendApprovalOutcome.Unavailable
+                ? ToolResult<SendStatus>.Failure(new ToolError(
+                    "send.approval_unavailable",
+                    ErrorCategory.Capability,
+                    "Local human approval is unavailable in this environment.",
+                    false,
+                    null,
+                    null), correlationId)
+                : ValidationFailure<SendStatus>(
+                    "send.approval_declined",
+                    "The send was not approved locally.",
+                    correlationId);
         }
 
         PreparedOutgoingMessage? message = await preparedStore.TakeAsync(

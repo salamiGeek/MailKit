@@ -11,11 +11,15 @@ namespace MailKit.Agent.Core.Sending;
 public interface ISendCommitApprover
 {
 	/// <summary>
-	/// Asks the local human whether this prepared send may be delivered. Returns
-	/// true only when the local approval factor was granted; false means the commit
-	/// must fail with <c>send.approval_declined</c> without consuming the token.
-	/// The preview is secret-free by construction, so implementations may render it
-	/// locally but must never transmit it or display the confirmation token it carries.
+	/// Asks the local human whether this prepared send may be delivered, returning
+	/// a <see cref="SendApprovalOutcome"/> that distinguishes an explicit human
+	/// refusal or caller cancellation (<see cref="SendApprovalOutcome.Declined">Declined</see>)
+	/// from an environment where no human can be asked at all
+	/// (<see cref="SendApprovalOutcome.Unavailable">Unavailable</see>). Either
+	/// non-approved outcome fails the commit without consuming the token. The
+	/// preview is secret-free by construction, so implementations may render it
+	/// locally but must never transmit it or display the confirmation token it
+	/// carries.
 	/// </summary>
-	ValueTask<bool> ApproveAsync(SendPreview preview, CancellationToken cancellationToken);
+	ValueTask<SendApprovalOutcome> ApproveAsync(SendPreview preview, CancellationToken cancellationToken);
 }
