@@ -290,7 +290,9 @@ public class SendApplicationTests
         {
             bool decision = approveNext;
             approveNext = true;
-            return Task.FromResult(decision);
+            return Task.FromResult(decision
+                ? SendApprovalOutcome.Approved
+                : SendApprovalOutcome.Declined);
         }));
 
         SendPreview preview = await PrepareAsync(fixture, "idem-declined", "session-a");
@@ -317,6 +319,50 @@ public class SendApplicationTests
             Assert.That(retried.Data!.State, Is.EqualTo(SendState.Succeeded));
             Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1),
                 "The SAME one-time token must still deliver after a later approval is granted.");
+        });
+    }
+
+    [Test]
+    public async Task UnavailableApprovalMapsToStableCapabilityErrorWithoutConsuming()
+    {
+        // An environment without an interactive desktop is NOT a human refusal:
+        // it must surface a distinct stable error so operators learn to run
+        // interactively, and it must not consume the one-time token either.
+        var unavailableOnce = true;
+        using var fixture = CreateFixture(approver: new FakeSendApprover((_, _) =>
+        {
+            bool unavailable = unavailableOnce;
+            unavailableOnce = false;
+            return Task.FromResult(unavailable
+                ? SendApprovalOutcome.Unavailable
+                : SendApprovalOutcome.Approved);
+        }));
+
+        SendPreview preview = await PrepareAsync(fixture, "idem-unavailable", "session-a");
+        ToolResult<SendStatus> unavailableResult = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+        int sendCountAfterUnavailable = fixture.Smtp.SendCount;
+        int passwordCallsAfterUnavailable = fixture.Vault.PasswordCalls;
+        ToolResult<SendStatus> statusAfterUnavailable = await fixture.Application.GetStatusAsync(
+            "personal", "idem-unavailable", CancellationToken.None);
+        ToolResult<SendStatus> later = await fixture.Application.CommitAsync(
+            preview.ConfirmationToken, "session-a", CancellationToken.None);
+
+        Assert.Multiple(() =>
+        {
+            AssertFailure(unavailableResult, "send.approval_unavailable", ErrorCategory.Capability);
+            Assert.That(
+                unavailableResult.Error!.Message,
+                Is.EqualTo("Local human approval is unavailable in this environment."));
+            Assert.That(unavailableResult.Error.Retryable, Is.False);
+            Assert.That(sendCountAfterUnavailable, Is.Zero);
+            Assert.That(passwordCallsAfterUnavailable, Is.Zero);
+            Assert.That(statusAfterUnavailable.Data!.State, Is.EqualTo(SendState.Prepared),
+                "An unavailable approval must not write Attempting or any terminal ledger state.");
+            Assert.That(later.Ok, Is.True, later.Error?.Message);
+            Assert.That(later.Data!.State, Is.EqualTo(SendState.Succeeded));
+            Assert.That(fixture.Smtp.SendCount, Is.EqualTo(1),
+                "The SAME one-time token must still deliver once approval becomes available.");
         });
     }
 
@@ -379,9 +425,10 @@ public class SendApplicationTests
             (_, cancellationToken) =>
             {
                 if (cancelledOnce)
-                    return Task.FromResult(true);
+                    return Task.FromResult(SendApprovalOutcome.Approved);
                 cancelledOnce = true;
-                return Task.FromException<bool>(new OperationCanceledException(cancellationToken));
+                return Task.FromException<SendApprovalOutcome>(
+                    new OperationCanceledException(cancellationToken));
             }));
         SendPreview preview = await PrepareAsync(fixture, "idem-cancel-approval", "session-a");
 
@@ -782,22 +829,22 @@ public class SendApplicationTests
     /// approval was granted; production hosts never inject an automatic approver.
     /// </summary>
     private sealed class FakeSendApprover(
-        Func<SendPreview, CancellationToken, Task<bool>>? handler = null) : ISendCommitApprover
+        Func<SendPreview, CancellationToken, Task<SendApprovalOutcome>>? handler = null) : ISendCommitApprover
     {
-        private readonly Func<SendPreview, CancellationToken, Task<bool>>? handler = handler;
+        private readonly Func<SendPreview, CancellationToken, Task<SendApprovalOutcome>>? handler = handler;
 
         public List<SendPreview> Seen { get; } = [];
 
         public Func<SendPreview, bool>? PreparationProbe { get; set; }
 
-        public async ValueTask<bool> ApproveAsync(
+        public async ValueTask<SendApprovalOutcome> ApproveAsync(
             SendPreview preview, CancellationToken cancellationToken)
         {
             Seen.Add(preview);
             if (PreparationProbe?.Invoke(preview) == false)
-                return false;
+                return SendApprovalOutcome.Declined;
             if (handler is null)
-                return true;
+                return SendApprovalOutcome.Approved;
             return await handler(preview, cancellationToken).ConfigureAwait(false);
         }
     }

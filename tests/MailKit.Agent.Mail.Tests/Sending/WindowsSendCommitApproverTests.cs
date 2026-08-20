@@ -143,13 +143,15 @@ public class WindowsSendCommitApproverTests
 	}
 
 	[Test]
-	public async Task ApproveWithCanceledTokenReturnsFalseWithoutShowingADialog()
+	public async Task ApproveWithCanceledTokenDeclinesWithoutShowingADialog()
 	{
 		// Exercises the cancellation entry guard of the real approver without ever
 		// opening a visible MessageBox (an already-canceled token must decline
-		// synchronously, which keeps CI non-interactive). The mid-wait close path
-		// (WM_CLOSE by caption) is deliberately left untested: observing it requires
-		// a real, human-clickable dialog.
+		// synchronously, which keeps CI non-interactive). Two branches are
+		// deliberately untested because observing them headlessly is impossible:
+		// the input-desktop probe on a machine WITH an interactive desktop (it
+		// would proceed to a real, human-clickable dialog) and the WM_CLOSE
+		// mid-wait dismissal path.
 		if (!OperatingSystem.IsWindows())
 			Assert.Ignore("The Windows approver's dialog plumbing only runs on Windows.");
 
@@ -157,9 +159,9 @@ public class WindowsSendCommitApproverTests
 		using var canceled = new CancellationTokenSource();
 		canceled.Cancel();
 
-		bool approved = await approver.ApproveAsync(Preview(), canceled.Token);
+		SendApprovalOutcome outcome = await approver.ApproveAsync(Preview(), canceled.Token);
 
-		Assert.That(approved, Is.False,
+		Assert.That(outcome, Is.EqualTo(SendApprovalOutcome.Declined),
 			"A canceled approval wait must decline without showing any dialog.");
 	}
 
