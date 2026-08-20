@@ -302,9 +302,13 @@ public sealed class Pop3Gateway : IPop3Gateway
             throw UidlConflict();
         }
 
+        // RFC 1939 makes UIDL uniqueness a SHOULD, not a MUST: real servers such
+        // as QQ POP3 emit colliding UIDLs for duplicated deliveries. Count and
+        // blank checks still detect malformed snapshots; duplicate UIDLs are
+        // tolerated (listing includes every message; reads resolve the first
+        // matching index, which is POP3's inherent limitation).
         if (uidls.Count != client.Count ||
-            uidls.Any(string.IsNullOrWhiteSpace) ||
-            uidls.Distinct(StringComparer.Ordinal).Count() != uidls.Count)
+            uidls.Any(string.IsNullOrWhiteSpace))
         {
             throw UidlConflict();
         }
