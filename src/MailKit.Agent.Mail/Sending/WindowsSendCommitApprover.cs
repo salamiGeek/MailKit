@@ -7,7 +7,9 @@ namespace MailKit.Agent.Mail.Sending;
 
 /// <summary>
 /// Windows implementation of the local human-approval gate for send commits.
-/// <see cref="ApproveAsync"/> first PROBES the interactive input desktop
+/// <see cref="ApproveAsync"/> first honors an already-cancelled token (the
+/// outcome is <see cref="SendApprovalOutcome.Declined"/> with no probe and no
+/// dialog), then PROBES the interactive input desktop
 /// (<c>OpenInputDesktop</c>; the handle is closed immediately): if the process has
 /// no input desktop — headless service session, disconnected session — the outcome
 /// is <see cref="SendApprovalOutcome.Unavailable"/> and NO dialog is attempted, so
@@ -49,14 +51,18 @@ public sealed class WindowsSendCommitApprover : ISendCommitApprover
 		if (!OperatingSystem.IsWindows())
 			return SendApprovalOutcome.Unavailable;
 
+		// A caller that already cancelled its approval wait declines locally —
+		// BEFORE the desktop probe, so the cancelled→declined mapping (the same one
+		// WM_CLOSE dismissal uses) is deterministic on every Windows host, headless
+		// ones included, and no probe or dialog runs at all.
+		if (cancellationToken.IsCancellationRequested)
+			return SendApprovalOutcome.Declined;
+
 		// Probe-first fail fast: without an interactive input desktop nobody could
 		// ever see or answer the dialog, so report the environment as unavailable
 		// instead of attempting (or hanging on) a MessageBox.
 		if (!HasInputDesktop())
 			return SendApprovalOutcome.Unavailable;
-
-		if (cancellationToken.IsCancellationRequested)
-			return SendApprovalOutcome.Declined;
 
 		var dialog = new DialogSession(BuildApprovalText(preview));
 		using CancellationTokenRegistration registration =
