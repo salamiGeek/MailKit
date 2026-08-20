@@ -503,10 +503,15 @@ public sealed class ImapGateway : IImapGateway
         if (pageUids.Length == 0)
             return new MessagePage(Array.Empty<MessageEnvelope>(), null);
 
+        // Fetch in ascending UID order: MailKit formats a consecutive descending
+        // array as a reversed range (e.g. 11650:11649), which strict servers
+        // such as QQ IMAP reject with "BAD UID parameters!".
+        UniqueId[] fetchUids = pageUids.OrderBy(uid => uid.Id).ToArray();
+
         IList<IMessageSummary> summaries;
         using (var scope = CreateScope(cancellationToken))
         {
-            summaries = await folder.FetchAsync(pageUids, SummaryItems, scope.Token)
+            summaries = await folder.FetchAsync(fetchUids, SummaryItems, scope.Token)
                 .ConfigureAwait(false);
         }
 
