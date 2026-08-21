@@ -167,8 +167,14 @@ public sealed class OutgoingMessageComposer : IOutgoingMessageComposer
         if (entity is not Multipart multipart)
             return;
 
+        // RFC 2046 §5.1.1 caps boundary strings at 70 characters (excluding the
+        // leading "--"). The full SHA-256 hex (64 chars) plus the prefix and
+        // counter would exceed that limit, which strict MIME consumers (e.g.
+        // Foxmail) reject, rendering the message body blank. Truncate the seed
+        // to keep every generated boundary within the limit while remaining
+        // deterministic: "mailkit-agent-" (14) + 40 hex + "-" + counter digits.
         int counter = 0;
-        AssignBoundary(multipart, seedHex, ref counter);
+        AssignBoundary(multipart, seedHex[..40], ref counter);
     }
 
     private static void AssignBoundary(Multipart multipart, string seedHex, ref int counter)
